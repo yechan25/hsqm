@@ -1,0 +1,15 @@
+# 데이터/체크포인트 (Drive에만 두고 git에는 안 올림)
+*.pt
+*.pth
+dataset/
+checkpoints/
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/

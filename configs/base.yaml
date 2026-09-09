@@ -1,0 +1,70 @@
+# 학습 설정. 보통 아래 경로 5개만 수정하면 됩니다:
+#   dataset_root, train_csv_path, test_dataset_root, test_csv_path, out_dir
+
+# 경로 (Colab + Google Drive 기준. 본인 Drive 구조에 맞게 수정)
+dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset"
+train_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/paths.csv"
+test_dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/test_dataset"
+test_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/test_dataset/paths.csv"
+out_dir: "/content/drive/Shareddrives/2026 자율연구/HSQM/outputs/bifpn_v1"
+
+# 데이터 / 모델
+image_size: 128
+max_strokes: 12
+auto_invert: true
+template_sigma: 5.0
+target_sigma: 3.0
+hard_threshold: 0.25
+swin_name: "swin_tiny_patch4_window7_224"
+swin_pretrained: true
+drop_rate: 0.1
+drop_path_rate: 0.2
+
+# decoder (NEW: BiFPN)
+fpn_channels: 256
+bifpn_layers: 2   # 작은 데이터셋이라 1~2로 제한 (5~7은 EfficientDet 대규모 데이터 기준)
+
+# 학습
+seed: 42
+epochs: 150
+batch_size: 8
+num_workers: 2
+lr: 2.0e-4
+backbone_lr: 2.0e-5
+weight_decay: 1.0e-4
+grad_clip: 1.0
+amp: true
+freeze_backbone_epochs: 15
+
+# loss
+dice_weight: 1.0
+bce_weight: 1.0
+false_positive_weight: 0.05
+short_stroke_weight_power: 0.5
+pos_weight: 12.0
+warp_smooth_weight: 0.01
+hint_aux_weight: 0.5
+hint_aux_decay_epoch: 60
+coverage_weight: 0.35
+bce_target_dilate_kernel: 3
+fp_ignore_dilate_kernel: 7
+
+# augmentation
+augment: true
+affine_p: 0.85
+rotation_deg: 15
+translate_frac: 0.10
+scale_min: 0.85
+scale_max: 1.15
+hflip_p: 0.05
+noise_p: 0.35
+noise_std: 0.04
+brightness_contrast_p: 0.35
+stroke_cutout_p: 0.35
+stroke_cutout_size: 16
+mixup_p: 0.25
+mixup_alpha: 0.4
+
+# 저장 / 평가
+save_every: 10
+eval_every: 5
