@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .data import StrokeDataset, collate_fn, move_batch, maybe_apply_mixup
+from .data import StrokeDataset, collate_fn, move_batch, maybe_apply_mixup, set_ignore_dirnames
 from .losses import total_loss, compute_metrics
 from .model import SwinWarpHintStrokeModel
 from .utils import (ensure_dir, get_device, set_seed, safe_json_dump,
@@ -28,6 +28,7 @@ def build_optimizer(model: SwinWarpHintStrokeModel, config: Dict[str, Any]) -> t
 
 
 def make_loaders(config: Dict[str, Any]):
+    set_ignore_dirnames(config.get("ignore_dirnames", []))
     train_ds = StrokeDataset(config["train_csv_path"], config["dataset_root"], train=True, config=config)
     test_ds = StrokeDataset(config["test_csv_path"], config["test_dataset_root"], train=False, config=config)
     common = dict(batch_size=config["batch_size"], num_workers=config["num_workers"],

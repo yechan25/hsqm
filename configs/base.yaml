@@ -1,12 +1,18 @@
 # 학습 설정. 보통 아래 경로 5개만 수정하면 됩니다:
 #   dataset_root, train_csv_path, test_dataset_root, test_csv_path, out_dir
 
-# 경로 (Colab + Google Drive 기준. 본인 Drive 구조에 맞게 수정)
-dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset"
-train_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/paths.csv"
-test_dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/test_dataset"
-test_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/test_dataset/paths.csv"
+# 경로 (Colab + Google Drive 기준)
+# 실제 구조: HSQM/dataset/train_dataset/paths.csv, HSQM/dataset/test_dataset/paths.csv
+dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/train_dataset"
+train_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/train_dataset/paths.csv"
+test_dataset_root: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/test_dataset"
+test_csv_path: "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/test_dataset/paths.csv"
 out_dir: "/content/drive/Shareddrives/2026 자율연구/HSQM/outputs/bifpn_v1"
+
+# 경로 검색에서 제외할 폴더 (안 쓰지만 삭제는 안 한 폴더).
+# input_stroke/ 와 input_stroke_ga/ 에 파일명이 겹쳐서 모호해지는 걸 방지.
+ignore_dirnames:
+  - "input_stroke_ga"
 
 # 데이터 / 모델
 image_size: 128

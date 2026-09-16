@@ -28,6 +28,19 @@ COL_ALIASES = {
 }
 
 _PATH_INDEX_CACHE: Dict[str, Dict[str, List[Path]]] = {}
+_IGNORE_DIR_NAMES: set = set()
+
+
+def set_ignore_dirnames(names) -> None:
+    """경로 검색(재귀 fallback)에서 제외할 폴더 이름을 지정한다.
+
+    안 쓰지만 삭제는 안 하는 폴더(예: input_stroke_ga)가 파일명이 겹쳐서
+    resolve_path()의 fallback 검색에 잘못 걸리는 걸 막기 위함.
+    폴더를 실제로 지우거나 옮기지 않고도, 코드가 그 폴더를 아예 안 보게 만든다.
+    """
+    global _IGNORE_DIR_NAMES
+    _IGNORE_DIR_NAMES = {n.lower() for n in names}
+    _PATH_INDEX_CACHE.clear()  # 이미 캐시된 인덱스는 무효화하고 다시 스캔
 
 
 def _build_path_index(root) -> Dict[str, List[Path]]:
@@ -41,6 +54,9 @@ def _build_path_index(root) -> Dict[str, List[Path]]:
     if root_path.exists():
         for q in root_path.rglob("*"):
             if q.is_file() and q.suffix.lower() in exts:
+                rel_dirs = q.relative_to(root_path).parts[:-1]
+                if any(d.lower() in _IGNORE_DIR_NAMES for d in rel_dirs):
+                    continue
                 index.setdefault(q.name, []).append(q)
     _PATH_INDEX_CACHE[key] = index
     return index
