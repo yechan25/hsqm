@@ -1,0 +1,44 @@
+[
+  {
+    "case": "Crossing strokes",
+    "method": "Ideal input / GT",
+    "active_dice": 1.0,
+    "shared_pixels": 16,
+    "seconds": 0
+  },
+  {
+    "case": "Crossing strokes",
+    "method": "Legacy exclusive",
+    "active_dice": 0.7101435775971046,
+    "shared_pixels": 0,
+    "seconds": 0.20184529999096412
+  },
+  {
+    "case": "Crossing strokes",
+    "method": "Graph overlap",
+    "active_dice": 1.0,
+    "shared_pixels": 16,
+    "seconds": 0.00673159999132622
+  },
+  {
+    "case": "Short attached stroke",
+    "method": "Ideal input / GT",
+    "active_dice": 1.0,
+    "shared_pixels": 16,
+    "seconds": 0
+  },
+  {
+    "case": "Short attached stroke",
+    "method": "Legacy exclusive",
+    "active_dice": 0.85973207249803,
+    "shared_pixels": 0,
+    "seconds": 0.011016300006303936
+  },
+  {
+    "case": "Short attached stroke",
+    "method": "Graph overlap",
+    "active_dice": 1.0,
+    "shared_pixels": 16,
+    "seconds": 0.0040895999991334975
+  }
+]
