@@ -2,6 +2,19 @@
 
 Swin Transformer + Warp Hint + Cross-Attention + BiFPN 기반 한글 획 분리 모델.
 
+## 가장 쉬운 실행: 셀 3개
+
+[Colab에서 간단 실행 노트북 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/easy_postprocess.ipynb)
+
+1. **준비하기** 실행
+2. **Drive 연결하고 기존 모델 불러오기** 실행 (모델이 여러 개면 번호 선택)
+3. **결과 보기** 실행
+
+코드는 자동으로 받고, 기존 FPN/BiFPN 체크포인트는 구조를 확인해 불러옵니다.
+기록된 공유 Drive의 HSQM 폴더 또는 MyDrive/HSQM에서 best.pt와 테스트
+데이터를 찾습니다. 못 찾는 경우에만 파일 경로를 묻습니다.
+다른 이미지는 3번 셀의 이미지 번호만 바꾸세요. 재학습하지 않습니다.
+
 ## 교차점 공유 후처리
 
 `stroke_model/graph_postprocess.py`에 교차점의 중복을 허용하는 graph 기반
