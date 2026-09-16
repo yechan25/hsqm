@@ -91,6 +91,20 @@ class GraphPostprocessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             refine_strokes_graph(pred, ink, active_channels=[0])
 
+    def test_exclusive_covers_low_confidence_pixels_and_ties(self):
+        pred = torch.zeros(1, 3, 9, 9)
+        refs = torch.zeros_like(pred)
+        refs[:, 1:, 4, 4] = 1
+        ink = torch.zeros(1, 1, 9, 9)
+        ink[:, :, 2:7, 2:7] = 1
+        # Even zero evidence must be assigned to one active channel;
+        # inactive channel 0 must not win the tie.
+        exclusive = postprocess_batch_predictions_graph(pred, ink, refs, mode="exclusive")
+        overlap = postprocess_batch_predictions_graph(pred, ink, refs, mode="overlap")
+        torch.testing.assert_close(exclusive.sum(1, keepdim=True), ink)
+        self.assertEqual(float(exclusive[:, 0].sum()), 0)
+        self.assertEqual(float(overlap.sum()), 0)
+
     def test_batch_modes_and_no_ink_leak(self):
         ref = torch.zeros(2, 2, 5, 5)
         ref[:, :, 2, 2] = 1

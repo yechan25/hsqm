@@ -89,10 +89,14 @@ def load_session(checkpoint_path=""):
             "checkpoint_path": str(chosen)}
 
 
-def show_result(session, sample_index=0):
+def show_result(session, sample_index=0, mode="exclusive"):
     import torch
     import matplotlib.pyplot as plt
     from .graph_postprocess import postprocess_batch_predictions_graph
+    from .postprocess import check_partition_integrity
+
+    if mode not in {"exclusive", "overlap"}:
+        raise ValueError("mode는 exclusive 또는 overlap으로 선택하세요.")
 
     dataset = session["dataset"]
     if not 0 <= sample_index < len(dataset):
@@ -105,7 +109,7 @@ def show_result(session, sample_index=0):
         out = session["model"](prep, item["I_g"][None].to(device), refs)
         raw = torch.sigmoid(out["logits"])
         post = postprocess_batch_predictions_graph(
-            raw, prep, refs, warped_hints=out["H"], mode="overlap",
+            raw, prep, refs, warped_hints=out["H"], mode=mode,
             threshold=session["config"].get("hard_threshold", 0.25),
         )
     active = torch.where(refs[0].sum((1, 2)) > 0)[0].tolist()
@@ -114,7 +118,7 @@ def show_result(session, sample_index=0):
     axes[0, 0].imshow(item["I_prep"][0], cmap="gray", vmin=0, vmax=1)
     axes[0, 0].set_title("Input")
     axes[1, 0].imshow(post[0].sum(0).cpu(), cmap="viridis", vmin=0, vmax=max(2, len(active)))
-    axes[1, 0].set_title("Shared stroke count")
+    axes[1, 0].set_title(f"Assignment count ({mode})")
     axes[2, 0].imshow(item["I_g"][0], cmap="gray", vmin=0, vmax=1)
     axes[2, 0].set_title("Reference")
     for j, k in enumerate(active, 1):
@@ -130,5 +134,11 @@ def show_result(session, sample_index=0):
     plt.show()
     print(f"이미지 {sample_index}: {item['char_id']}")
     print("위: 모델 예측 / 가운데: 새 후처리 / 아래: 정답")
-    print("다른 이미지는 3번 셀의 이미지_번호만 바꿔 다시 실행하세요.")
+    report = check_partition_integrity(post[0], prep[0])
+    print(f"모드: {mode} | 글자 픽셀: {int(report['input_ink_pixels'])} | "
+          f"미배정: {int(report['missing_pixels'])} | "
+          f"중복 배정(초과 횟수): {int(report['overlap_excess_pixels'])} | "
+          f"배경 침범: {int(report['extra_pixels'])}")
+    print("검사는 입력에서 글자로 판별된 영역 기준입니다.")
+    print("이미지_번호 또는 mode를 바꾼 뒤 3번 셀만 다시 실행하세요.")
     return post.cpu()
