@@ -46,6 +46,9 @@ def _build_path_index(root) -> Dict[str, List[Path]]:
     return index
 
 
+_AMBIGUOUS_WARNED: set = set()
+
+
 def _choose_path(candidates: List[Path], raw_value: str) -> Path:
     if len(candidates) == 1:
         return candidates[0]
@@ -59,6 +62,17 @@ def _choose_path(candidates: List[Path], raw_value: str) -> Path:
             scored.append((score, len(str(c)), c))
         scored.sort(key=lambda x: (-x[0], x[1]))
         return scored[0][2]
+
+    # CSV 값에 폴더 힌트가 없는데 같은 파일명이 여러 폴더에 존재 -> 모호함.
+    # 지금은 "경로가 짧은 쪽"을 고르지만, 이게 항상 의도한 폴더는 아닐 수 있으므로
+    # 처음 발견될 때 경고를 한 번만 출력한다 (예: input_stroke/ vs input_stroke_ga/).
+    key = raw_value.lower()
+    if key not in _AMBIGUOUS_WARNED:
+        _AMBIGUOUS_WARNED.add(key)
+        chosen = sorted(candidates, key=lambda x: (len(str(x)), str(x)))[0]
+        others = ", ".join(str(c) for c in candidates if c != chosen)
+        print(f"[WARNING] '{raw_value}' 파일명이 여러 폴더에 중복 존재. "
+              f"'{chosen}'를 선택함 (다른 후보: {others})")
     return sorted(candidates, key=lambda x: (len(str(x)), str(x)))[0]
 
 
