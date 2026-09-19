@@ -4,6 +4,7 @@ python -m stroke_model.train_reference --manifest data_v2/manifest.json --epochs
 """
 import argparse
 import json
+import time
 from pathlib import Path
 import numpy as np
 import torch
@@ -34,6 +35,7 @@ def read_manifest(path):
 class StrokeDataset(Dataset):
     def __init__(self, rows, size=128):
         self.rows, self.size = rows, size
+        self.validated = set()
 
     def __len__(self):
         return len(self.rows)
@@ -46,6 +48,8 @@ class StrokeDataset(Dataset):
         if not np.issubdtype(raw_labels.dtype, np.integer):
             raise ValueError('labels must be an integer array; no soft/overlapping labels')
         labels = torch.from_numpy(raw_labels).long()
+        if index in self.validated:
+            return image, reference, strokes, labels
         if image.shape != (1, self.size, self.size) or reference.shape != image.shape:
             raise ValueError('image/reference must be 1xSxS; normalize before export')
         if strokes.ndim != 3 or strokes.shape[-2:] != image.shape[-2:] or strokes.shape[0] == 0:
@@ -60,6 +64,7 @@ class StrokeDataset(Dataset):
         active = strokes.flatten(1).sum(1) > 0
         if not active.any() or not active[labels[labels >= 0]].all():
             raise ValueError('Annotations reference an absent stroke')
+        self.validated.add(index)
         return image, reference, strokes, labels
 
 
@@ -71,21 +76,25 @@ def collate(samples):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, amp=False, amp_dtype=torch.float16):
     """Macro Dice over annotated nonempty strokes, not padded channels."""
-    scores = []
+    total = torch.zeros((), device=device)
+    count = torch.zeros((), device=device)
     model.eval()
     for batch in loader:
-        image, ref, strokes, labels = [x.to(device) for x in batch]
-        prediction = model(image, ref, strokes)['probabilities'].argmax(1)
-        for b in range(len(image)):
-            known = labels[b] >= 0
-            for k in labels[b][known].unique():
-                target, pred = labels[b] == k, (prediction[b] == k) & known
-                scores.append((2 * (target & pred).sum().float() / (target.sum() + pred.sum())).item())
-    if not scores:
+        image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch]
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp):
+            prediction = model(image, ref, strokes)['probabilities'].argmax(1)
+        known = labels[:, None] >= 0
+        target = torch.nn.functional.one_hot(labels.clamp_min(0), strokes.shape[1]).permute(0, 3, 1, 2).bool() & known
+        pred = torch.nn.functional.one_hot(prediction, strokes.shape[1]).permute(0, 3, 1, 2).bool() & known
+        mass = target.sum((-2, -1))
+        dice = 2 * (target & pred).sum((-2, -1)).float() / (mass + pred.sum((-2, -1))).clamp_min(1)
+        total += dice[mass > 0].sum()
+        count += (mass > 0).sum()
+    if count.item() == 0:
         raise ValueError('Validation set has no labelled strokes')
-    return sum(scores) / len(scores)
+    return (total / count).item()
 
 
 def main():
@@ -93,12 +102,25 @@ def main():
     p.add_argument('--manifest', required=True)
     p.add_argument('--output', default='outputs/reference_v2')
     p.add_argument('--epochs', type=int, default=30)
-    p.add_argument('--batch-size', type=int, default=2)
+    p.add_argument('--batch-size', type=int, default=8)
+    p.add_argument('--num-workers', type=int, default=2)
+    p.add_argument('--no-amp', action='store_true')
+    p.add_argument('--local-cache', default=None)
     p.add_argument('--image-size', type=int, default=128)
     p.add_argument('--seed', type=int, default=42)
     args = p.parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.local_cache:
+        from .local_reference_data import stage_manifest
+        args.manifest = str(stage_manifest(args.manifest, args.local_cache))
+    amp = device.type == 'cuda' and not args.no_amp
+    amp_dtype = torch.bfloat16 if amp and torch.cuda.is_bf16_supported() else torch.float16
+    if device.type == 'cuda':
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    print(f'Device: {torch.cuda.get_device_name() if device.type == "cuda" else "CPU"}; batch={args.batch_size}; AMP={amp}; dtype={amp_dtype}', flush=True)
     rows = read_manifest(args.manifest)
     loaders = {}
     for split in ('train', 'val'):
@@ -106,28 +128,46 @@ def main():
         if not len(dataset):
             raise ValueError('Missing split: ' + split)
         loaders[split] = DataLoader(dataset, batch_size=args.batch_size,
-                                   shuffle=split == 'train', collate_fn=collate)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                                   shuffle=split == 'train', collate_fn=collate,
+                                   num_workers=args.num_workers, pin_memory=device.type == 'cuda',
+                                   persistent_workers=args.num_workers > 0)
+        print(f'{split}: {len(dataset)} samples, {len(loaders[split])} batches', flush=True)
+    print('Loading Swin pretrained weights...', flush=True)
     model = ReferenceStrokeModel(image_size=args.image_size).to(device)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=2e-4, weight_decay=.01)
+    scaler = torch.amp.GradScaler('cuda', enabled=amp and amp_dtype == torch.float16)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
     best, history = -1., []
     for epoch in range(args.epochs):
         model.train()
         total = 0.
-        progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}')
+        started = time.perf_counter()
+        previous = started
+        data_seconds = 0.
+        progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}', mininterval=5)
         for batch in progress:
-            image, ref, strokes, labels = [x.to(device) for x in batch]
+            data_seconds += time.perf_counter() - previous
+            image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch]
             optimizer.zero_grad(set_to_none=True)
-            loss = partition_loss(model(image, ref, strokes), labels)['loss']
-            loss.backward()
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp):
+                loss = partition_loss(model(image, ref, strokes), labels)['loss']
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
-            optimizer.step()
-            total += loss.item() * len(image)
-            progress.set_postfix(loss=f'{loss.item():.4f}', refresh=False)
-        score = evaluate(model, loaders['val'], device)
-        row = {'epoch': epoch + 1, 'train_loss': total / len(loaders['train'].dataset), 'val_macro_dice': score}
+            scaler.step(optimizer)
+            scaler.update()
+            value = loss.item()
+            total += value * len(image)
+            progress.set_postfix(loss=f'{value:.4f}', refresh=False)
+            previous = time.perf_counter()
+        train_seconds = time.perf_counter() - started
+        print('Validation...', flush=True)
+        score = evaluate(model, loaders['val'], device, amp, amp_dtype)
+        row = {'epoch': epoch + 1, 'train_loss': total / len(loaders['train'].dataset), 'val_macro_dice': score,
+               'train_seconds': train_seconds, 'data_wait_seconds': data_seconds,
+               'samples_per_second': len(loaders['train'].dataset) / train_seconds,
+               'epoch_seconds': time.perf_counter() - started}
         history.append(row)
         print(json.dumps(row), flush=True)
         if score > best:

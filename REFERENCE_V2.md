@@ -166,3 +166,13 @@ Drive `HSQM/reference_v2_data/시간/` 아래 새 데이터와 결과를 저장�
 현재 실행 중인 구버전 변환도 완료 후 자동 등록한다. 이 경우 CSV 경로·행 수·수정 시각으로 확인하며 원본이 수정되지 않았다는 전제다.
 이미지 자체를 매번 해싱하지 않으므로 같은 경로의 이미지 내용을 고친 경우 `rebuild=True`로 변환해야 한다.
 미완성 폴더는 재사용하지 않는다. 증강 횟수/seed가 바뀌면 새 증강을 만든다. 캐시 검증은 파일 존재 확인이므로 Drive에서는 짧은 대기가 있을 수 있다.
+
+## 학습 속도 수정
+
+- 네 번째 셀은 완료된 train/val NPZ를 `/content/reference_v2_local`에 병렬 복사하고 manifest 경로를 로컬로 바꾼다. 런타임 내에서는 재사용한다. NPZ 변환/증강을 다시 하지 않는다. Drive 원본을 같은 경로에서 수정했다면 로컬 캐시도 새로 준비해야 한다.
+- 체크포인트와 history는 Drive에 계속 저장한다. 학습 배치에서는 Drive를 읽지 않는다.
+- 기본 batch 8, worker 2, pin memory, persistent workers. CUDA에서는 BF16 지원 시 BF16, 그 외 FP16+GradScaler. `--no-amp`로 FP32 비교 가능.
+- 획을 최대 4개씩 묶어 처리하고 공통 입력 특징의 합성곱을 한 번만 계산한다. 기존 head의 합성곱을 선형성에 따라 분해했으며 GroupNorm은 각 획별로 유지한다. 기존 V2 가중치와 호환된다.
+- CPU에서 원래 순차 방식 대비 출력, 입력/파라미터 기울기 일치 및 BF16 유한 기울기를 검증했다. A100 실측 속도/메모리는 Colab 실행 후 확인해야 한다.
+- epoch마다 samples_per_second, train_seconds, data_wait_seconds, epoch_seconds를 기록한다. 진행률은 5초 간격으로 갱신해 로그가 과도하게 쌓이지 않게 했다.
+- 로컬 복사는 최초 1회 시간이 걸린다. 복사 시간은 epoch 학습 시간과 구분해서 봐야 한다. CUDA OOM 발생 시 노트북 batch_size를 4로 낮춘다.

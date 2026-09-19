@@ -54,10 +54,29 @@ print("학습 manifest:", training_manifest)
 ''')
     code('''from datetime import datetime
 epochs = 30
+batch_size = 8
 output = manifest.parent / ("reference_v2_run_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-subprocess.run([sys.executable, "-m", "stroke_model.train_reference",
-                "--manifest", str(training_manifest), "--epochs", str(epochs),
-                "--output", str(output)], cwd=root, check=True)
+cmd = [sys.executable, "-u", "-m", "stroke_model.train_reference",
+       "--manifest", str(training_manifest), "--epochs", str(epochs),
+       "--batch-size", str(batch_size), "--num-workers", "2",
+       "--local-cache", "/content/reference_v2_local", "--output", str(output)]
+print("처음에는 Drive 데이터를 로컬로 복사합니다. 이후 학습 중에는 Drive에서 읽지 않습니다.", flush=True)
+with subprocess.Popen(cmd, cwd=root, stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
+    try:
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+        result = proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
+if result:
+    raise RuntimeError(f"학습 실패: 종료 코드 {result}. 위 로그를 확인하세요.")
 print("체크포인트:", output / "best.pt")
 ''')
     code('''# 학습이 끝난 후 가장 좋은 모델의 검증 이미지 결과를 확인합니다.
@@ -75,6 +94,7 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
              'stroke_model/reference_model.py', 'stroke_model/train_reference.py', 'stroke_model/augment_reference.py',
              'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
              'stroke_model/reference_cache.py',
+             'stroke_model/local_reference_data.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in files:

@@ -29,7 +29,7 @@ def warp(strokes, flow):
 
 class ReferenceStrokeModel(nn.Module):
     def __init__(self, image_size=128, width=64, pretrained=True,
-                 backbone=None, channels=None, channels_last=False):
+                 backbone=None, channels=None, channels_last=False, stroke_chunk_size=4):
         super().__init__()
         if width % 4:
             raise ValueError("width must be divisible by 4")
@@ -47,6 +47,7 @@ class ReferenceStrokeModel(nn.Module):
         if not channels:
             raise ValueError("Injected backbone requires its feature channels")
         self.backbone = backbone
+        self.stroke_chunk_size = max(1, int(stroke_chunk_size))
         self.channels_last = channels_last
         self.backbone_frozen = True
         self.backbone.requires_grad_(False)
@@ -98,19 +99,38 @@ class ReferenceStrokeModel(nn.Module):
         yy, xx = torch.meshgrid(torch.linspace(-1, 1, h, device=image.device, dtype=image.dtype),
                                 torch.linspace(-1, 1, w, device=image.device, dtype=image.dtype), indexing="ij")
         xy = torch.stack((xx, yy))[None].expand(b, -1, -1, -1)
-        scores = []
-        for j in range(k):
-            # Spatial reference features retain more information than one pooled prototype.
-            r = self.reference(torch.cat((reference, strokes[:, j:j+1], xy), 1))
-            r = warp(resize(r, (h, w)), flow)
-            x = torch.cat((features, r, hints[:, j:j+1], image, xy), 1)
-            scores.append(self.head(x))
-        logits = torch.cat(scores, 1).masked_fill(~active[:, :, None, None], -torch.inf)
+        logits = self.score_strokes(features, reference, strokes, xy, flow, hints, image)
+        logits = logits.float().masked_fill(~active[:, :, None, None], -torch.inf)
         probabilities = logits.softmax(1) * active[:, :, None, None]
         probabilities = probabilities / probabilities.sum(1, keepdim=True)
         return {"logits": logits, "probabilities": probabilities,
                 "masks": image * probabilities, "flow": flow, "hints": hints,
                 "active": active}
+
+    def score_strokes(self, features, reference, strokes, xy, flow, hints, image):
+        """Same head algebra, batching strokes and computing shared convolution once.
+
+        GroupNorm is per sample, so stroke batching does not mix stroke statistics.
+        Existing V2 state_dicts remain compatible; input gradients remain connected.
+        """
+        b, k, h, w = strokes.shape
+        width = features.shape[1]
+        conv = self.head[0][0]
+        shared_weight = torch.cat((conv.weight[:, :width], conv.weight[:, 2*width+1:]), 1)
+        shared = F.conv2d(torch.cat((features, image, xy), 1), shared_weight, conv.bias, padding=1)
+        outputs = []
+        for start in range(0, k, self.stroke_chunk_size):
+            n = min(self.stroke_chunk_size, k-start)
+            def repeat(t):
+                return t[:, None].expand(-1, n, -1, -1, -1).reshape(b*n, *t.shape[1:])
+            selected = strokes[:, start:start+n].reshape(b*n, 1, h, w)
+            r = self.reference(torch.cat((repeat(reference), selected, repeat(xy)), 1))
+            r = warp(resize(r, (h, w)), repeat(flow))
+            condition = torch.cat((r, hints[:, start:start+n].reshape(b*n, 1, h, w)), 1)
+            x = F.conv2d(condition, conv.weight[:, width:2*width+1], padding=1) + repeat(shared)
+            x = self.head[0][2](self.head[0][1](x))
+            outputs.append(self.head[1](x).reshape(b, n, h, w))
+        return torch.cat(outputs, 1)
 
 
 def exclusive_masks(output, foreground):
