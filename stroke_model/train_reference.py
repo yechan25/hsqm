@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 from torch.utils.data import Dataset, DataLoader
 from .reference_model import ReferenceStrokeModel, partition_loss
 
@@ -115,7 +116,8 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         total = 0.
-        for batch in loaders['train']:
+        progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}')
+        for batch in progress:
             image, ref, strokes, labels = [x.to(device) for x in batch]
             optimizer.zero_grad(set_to_none=True)
             loss = partition_loss(model(image, ref, strokes), labels)['loss']
@@ -123,6 +125,7 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
             optimizer.step()
             total += loss.item() * len(image)
+            progress.set_postfix(loss=f'{loss.item():.4f}', refresh=False)
         score = evaluate(model, loaders['val'], device)
         row = {'epoch': epoch + 1, 'train_loss': total / len(loaders['train'].dataset), 'val_macro_dice': score}
         history.append(row)

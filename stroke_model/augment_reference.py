@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 from torch.nn import functional as F
 from .train_reference import read_manifest, StrokeDataset
 
@@ -47,7 +48,7 @@ def main():
     seeds = [r for r in rows if r['split'] == 'train' and r.get('source') != 'augmented']
     dataset = StrokeDataset(seeds, args.image_size)
     extra = []
-    for i, row in enumerate(seeds):
+    for i, row in enumerate(tqdm(seeds, desc='Augment training samples')):
         image, reference, strokes, labels = dataset[i]
         for j in range(args.variants):
             x, y = augment(image, labels, generator)

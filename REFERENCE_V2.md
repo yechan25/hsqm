@@ -147,6 +147,19 @@ grid_sample은 1차 이미지 gradient를 지원하지만 고차미분 요구와
 - timm 1.0.29 실제 Swin, pretrained=False에서 순전파, 학습 손실 역전파, 전체 추출기 고정 후 입력 gradient 확인.
 - 파라미터 27,919,325개 중 학습 대상 407,267개. 가중치 동결은 diffusion guidance 메모리 사용을 없애는 것은 아니다.
 - 테스트는 정확도/Colab 실제 학습/사전학습 가중치 다운로드 검증이 아니다.
-- `notebooks/train_reference_v2.ipynb`는 4개 실행 셀. 첫 셀은 `https://github.com/yechan25/hsqm.git`에서 코드를 받고 버전을 출력한다. ZIP 업로드 없이 검수 데이터 manifest 경로를 입력한다. 기존 paths.csv 직접 입력은 아직 지원하지 않는다.
+- `notebooks/train_reference_v2.ipynb`는 5개 실행 셀. 첫 셀은 `https://github.com/yechan25/hsqm.git`에서 코드를 받고 버전을 출력한다. 두 번째 셀은 알려진 Drive의 `HSQM/dataset/train_dataset/paths.csv`를 자동 변환한다. 이후 train 증강, 학습, 검증 결과 표시 순서다. ZIP/manifest 수동 입력은 필요 없다.
 - `python tests/build_reference_bundle.py`로 현재 소스의 ZIP과 노트북을 재생성할 수 있다.
 - 원본 비교 마스크도 동일한 교차점 소유 규약을 적용해야 면적/모양 지표에 정의 차이가 섞이지 않는다.
+
+## 기존 CSV 자동 변환
+
+`convert_reference_csv.convert_csv`는 CSV의 기준 획 목록과 타깃 획 목록이 동일 순서라고 가정한다.
+의미적인 획 대응을 새로 추측하지 않는다. 획 개수 불일치, 빈 기준 획, 파일 누락/모호한 경로는 행 번호와 함께 중단한다.
+배경 밝기로 극성을 판별하고 투명 PNG는 흰 배경에 합성한다. 비표준 극성은 변환 미리보기에서 확인한다.
+target mask > 0.5이며 image > 0.5인 단독 소유 픽셀만 라벨링한다. 교차/누락은 -1로 두며
+`conversion_report.json`에 커버리지/겹침/누락을 기록한다. 따라서 자동 변환 직후 val Dice는 **주석된 부분의 점수**이며 교차점 전체 성능을 보장하지 않는다.
+필자/group 컬럼이 있으면 그룹 단위, 없으면 정규화한 입력 이미지 해시 단위로 80/20 분리한다.
+동일 원본 복제는 분할을 공유하지만, 필자 ID가 없을 때 필자 누수를 방지한다고 주장할 수 없다.
+train CSV만 사용하며 기존 test_dataset은 모델 선택에 사용하지 않는다.
+Drive `HSQM/reference_v2_data/시간/` 아래 새 데이터와 결과를 저장하며 원본 CSV/이미지는 변경하지 않는다.
+재실행 시 새 변환/증강 폴더를 만들어 이전 결과를 덮어쓰지 않는다.

@@ -1,4 +1,4 @@
-"""Package the V2 sources and a four-cell Colab entry point, without dataset/weights."""
+"""Package V2 sources and a five-cell Colab entry point, without dataset/weights."""
 import json
 from pathlib import Path
 import zipfile
@@ -16,7 +16,7 @@ def main():
                       'source': text.splitlines(keepends=True)})
     markdown('# 기준 획 모델 V2\nGPU 런타임을 선택하세요. 학습된 모델이 아니라 새 모델의 학습 노트북입니다.\n'
              '첫 셀이 실제 GitHub 저장소에서 코드를 자동으로 받습니다. ZIP 업로드는 필요 없습니다. '
-             '학습에는 검수된 NPZ 데이터/manifest.json이 필요하며 기존 paths.csv는 직접 지원하지 않습니다. '
+             '두 번째 셀이 기존 paths.csv를 자동 변환합니다. 기준/정답 획은 CSV에서 같은 순서여야 합니다. '
              '데이터 형식은 REFERENCE_V2.md를 참조하세요. 기존 best.pt와는 호환되지 않습니다.\n')
     code('''from pathlib import Path
 import sys, subprocess, tempfile
@@ -34,28 +34,29 @@ commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "--short"
 print("모델 코드 준비 완료 / GitHub 버전:", commit)
 ''')
     code('''from google.colab import drive
+from datetime import datetime
 drive.mount("/content/drive")
-manifest = Path(input("Drive의 manifest.json 전체 경로: ").strip())
-if manifest.suffix.lower() == ".csv":
-    raise ValueError("기존 paths.csv를 입력하셨습니다. V2는 아직 CSV 직접 학습을 지원하지 않습니다. 획 대응을 확인한 데이터 변환이 필요합니다.")
-if not manifest.is_file():
-    raise FileNotFoundError(manifest)
-from stroke_model.train_reference import read_manifest, StrokeDataset
-rows = read_manifest(manifest)
-for split in ("train", "val", "test"):
-    subset = [r for r in rows if r["split"] == split]
-    for i in range(len(subset)):
-        StrokeDataset(subset)[i]
-    print(split, len(subset))
-print("데이터 형식과 그룹 분할 검사 완료")
+from stroke_model.convert_reference_csv import convert_csv, existing_path
+from stroke_model.preview_reference import preview_reference
+csv_path = existing_path("/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/train_dataset/paths.csv")
+# 원본 CSV/이미지는 변경하지 않습니다. train CSV에서만 80/20으로 나눕니다.
+prepared = csv_path.parents[2] / "reference_v2_data" / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+manifest = convert_csv(csv_path, prepared)
+preview_reference(manifest)
+print("데이터 준비 완료:", manifest)
 ''')
     code('''# 학습 데이터만 증강합니다. 0으로 바꾸면 증강 없이 비교할 수 있습니다.
 variants = 20
 training_manifest = manifest
 if variants > 0:
+    # 셀을 다시 실행해도 기존 증강 폴더를 덮어쓰지 않습니다.
+    augment_seed = 42
+    while (manifest.parent / f"augmented_seed{augment_seed}").exists():
+        augment_seed += 1
     subprocess.run([sys.executable, "-m", "stroke_model.augment_reference",
-                    "--manifest", str(manifest), "--variants", str(variants)], cwd=root, check=True)
-    training_manifest = manifest.parent / "augmented_seed42" / "manifest.json"
+                    "--manifest", str(manifest), "--variants", str(variants),
+                    "--seed", str(augment_seed)], cwd=root, check=True)
+    training_manifest = manifest.parent / f"augmented_seed{augment_seed}" / "manifest.json"
 print("학습 manifest:", training_manifest)
 ''')
     code('''from datetime import datetime
@@ -66,6 +67,10 @@ subprocess.run([sys.executable, "-m", "stroke_model.train_reference",
                 "--output", str(output)], cwd=root, check=True)
 print("체크포인트:", output / "best.pt")
 ''')
+    code('''# 학습이 끝난 후 가장 좋은 모델의 검증 이미지 결과를 확인합니다.
+from stroke_model.preview_reference import preview_reference
+preview_reference(manifest, checkpoint=output / "best.pt", count=5)
+''')
     notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},
                                            'colab': {'name': 'train_reference_v2.ipynb'}, 'accelerator': 'GPU'},
                 'nbformat': 4, 'nbformat_minor': 5}
@@ -75,6 +80,7 @@ print("체크포인트:", output / "best.pt")
     dest.parent.mkdir(exist_ok=True)
     files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
              'stroke_model/reference_model.py', 'stroke_model/train_reference.py', 'stroke_model/augment_reference.py',
+             'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in files:
