@@ -10,6 +10,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.test-deps/
+data_v2/
 
 # Jupyter
 .ipynb_checkpoints/

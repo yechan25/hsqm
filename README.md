@@ -1,5 +1,13 @@
 # Hangul Stroke Extraction
 
+## 새 연구 모델: 기준 획 조건부 V2
+
+[구조·데이터 구축·미분 가능 지표 설계](REFERENCE_V2.md), [Colab 학습 노트북](notebooks/train_reference_v2.ipynb).
+[V2 학습을 Colab에서 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_reference_v2.ipynb)
+첫 셀에서 GitHub 코드를 자동으로 받습니다. 데이터는 V2의 NPZ/manifest 형식이 필요합니다.
+동결 Swin + 공유 획 추출 헤드. 실제 데이터 학습 전이며 기존 체크포인트와 호환되지 않습니다.
+아래 셀 3개 노트북은 기존 FPN/BiFPN 모델용입니다.
+
 Swin Transformer + Warp Hint + Cross-Attention + BiFPN 기반 한글 획 분리 모델.
 
 ## 가장 쉬운 실행: 셀 3개
