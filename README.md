@@ -6,6 +6,7 @@
 [V2 학습을 Colab에서 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_reference_v2.ipynb)
 첫 셀에서 GitHub 코드를 받고, 두 번째 셀에서 기존 train_dataset/paths.csv를 자동 변환합니다.
 이후 train 증강 → 학습 → 검증 결과 표시까지 5개 셀로 실행합니다.
+완료된 변환·동일 설정의 증강 데이터는 Drive에서 재사용합니다. 이미지 내용을 같은 경로에서 수정했다면 두 번째 셀의 `rebuild=True`로 다시 만드세요.
 동결 Swin + 공유 획 추출 헤드. 실제 데이터 학습 전이며 기존 체크포인트와 호환되지 않습니다.
 아래 셀 3개 노트북은 기존 FPN/BiFPN 모델용입니다.
 

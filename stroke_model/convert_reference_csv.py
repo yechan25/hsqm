@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
+from tqdm.auto import tqdm
 
 
 def normalized(value):
@@ -128,7 +129,7 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None):
     (output / 'samples').mkdir()
     rows, reports = [], []
     seen_images = {}
-    for index, row in df.iterrows():
+    for index, row in tqdm(df.iterrows(), total=len(df), desc='Convert images to NPZ', unit='sample'):
         try:
             image_path = resolve(row[cols['image']])
             image = load_ink(image_path, size)

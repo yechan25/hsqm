@@ -36,27 +36,20 @@ print("모델 코드 준비 완료 / GitHub 버전:", commit)
     code('''from google.colab import drive
 from datetime import datetime
 drive.mount("/content/drive")
-from stroke_model.convert_reference_csv import convert_csv, existing_path
+from stroke_model.convert_reference_csv import existing_path
+from stroke_model.reference_cache import prepare_cached
 from stroke_model.preview_reference import preview_reference
 csv_path = existing_path("/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/train_dataset/paths.csv")
 # 원본 CSV/이미지는 변경하지 않습니다. train CSV에서만 80/20으로 나눕니다.
-prepared = csv_path.parents[2] / "reference_v2_data" / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-manifest = convert_csv(csv_path, prepared)
+manifest = prepare_cached(csv_path, csv_path.parents[2] / "reference_v2_data", rebuild=False)
+prepared = manifest.parent
 preview_reference(manifest)
 print("데이터 준비 완료:", manifest)
 ''')
     code('''# 학습 데이터만 증강합니다. 0으로 바꾸면 증강 없이 비교할 수 있습니다.
 variants = 20
-training_manifest = manifest
-if variants > 0:
-    # 셀을 다시 실행해도 기존 증강 폴더를 덮어쓰지 않습니다.
-    augment_seed = 42
-    while (manifest.parent / f"augmented_seed{augment_seed}").exists():
-        augment_seed += 1
-    subprocess.run([sys.executable, "-m", "stroke_model.augment_reference",
-                    "--manifest", str(manifest), "--variants", str(variants),
-                    "--seed", str(augment_seed)], cwd=root, check=True)
-    training_manifest = manifest.parent / f"augmented_seed{augment_seed}" / "manifest.json"
+from stroke_model.reference_cache import ensure_augmented
+training_manifest = ensure_augmented(manifest, variants=variants, seed=42)
 print("학습 manifest:", training_manifest)
 ''')
     code('''from datetime import datetime
@@ -81,6 +74,7 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
     files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
              'stroke_model/reference_model.py', 'stroke_model/train_reference.py', 'stroke_model/augment_reference.py',
              'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
+             'stroke_model/reference_cache.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in files:

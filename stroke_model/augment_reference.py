@@ -39,10 +39,11 @@ def main():
     p.add_argument('--variants', type=int, default=20)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--image-size', type=int, default=128)
+    p.add_argument('--output', default=None)
     args = p.parse_args()
     rows = read_manifest(args.manifest)
     # Fresh output prevents silently overwriting a previous experiment.
-    dest = Path(args.manifest).resolve().parent / f'augmented_seed{args.seed}'
+    dest = Path(args.output) if args.output else Path(args.manifest).resolve().parent / f'augmented_seed{args.seed}'
     dest.mkdir(exist_ok=False)
     generator = torch.Generator().manual_seed(args.seed)
     seeds = [r for r in rows if r['split'] == 'train' and r.get('source') != 'augmented']
