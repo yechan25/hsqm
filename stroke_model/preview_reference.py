@@ -4,18 +4,20 @@ import numpy as np
 from .train_reference import read_manifest, StrokeDataset
 
 
-def preview_reference(manifest, checkpoint=None, count=3):
+def preview_reference(manifest, checkpoint=None, count=3, split='val', start=0, save_dir=None):
     import matplotlib.pyplot as plt
     from .reference_model import ReferenceStrokeModel
-    rows = [r for r in read_manifest(manifest) if r['split'] == 'val'][:count]
-    dataset = StrokeDataset(rows)
+    rows = [r for r in read_manifest(manifest) if r['split'] == split][start:start+count]
+    size = 128
     model = None
     if checkpoint is not None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         state = torch.load(checkpoint, map_location=device, weights_only=True)
+        size = state['image_size']
         model = ReferenceStrokeModel(image_size=state['image_size'], width=state['width'], pretrained=False).to(device)
         model.load_state_dict(state['model'])
         model.eval()
+    dataset = StrokeDataset(rows, size=size)
     for i in range(len(dataset)):
         image, reference, strokes, labels = dataset[i]
         palette = plt.get_cmap('tab20')(np.arange(len(strokes)) % 20)[:, :3]
@@ -39,4 +41,9 @@ def preview_reference(manifest, checkpoint=None, count=3):
             ax.set_title(title)
             ax.axis('off')
         plt.tight_layout()
+        if save_dir is not None:
+            from pathlib import Path
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            figure.savefig(Path(save_dir) / f'{split}_{start+i:04d}.png', dpi=140)
         plt.show()
+        plt.close(figure)

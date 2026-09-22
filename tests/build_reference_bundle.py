@@ -88,6 +88,20 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
                 'nbformat': 4, 'nbformat_minor': 5}
     path = ROOT / 'notebooks/train_reference_v2.ipynb'
     path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1), encoding='utf-8')
+    setup_cell = cells[1]
+    cells = []
+    markdown('# V2 test 데이터 평가\n학습하지 않습니다. 저장된 best.pt로 test_dataset 전체를 평가합니다. '
+             '첫 실행은 test 이미지를 변환하고 이후에는 재사용합니다. GPU를 선택하고 두 셀을 실행하세요.\n')
+    cells.append(setup_cell)
+    code('''from google.colab import drive
+drive.mount("/content/drive")
+from stroke_model.test_reference import run_test
+checkpoint = "/content/drive/Shareddrives/2026 자율연구/HSQM/reference_v2_data/20260919_114512_509544/reference_v2_run_20260919_124839/best.pt"
+test_csv = "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/test_dataset/paths.csv"
+metrics = run_test(checkpoint, test_csv, preview_count=5)
+''')
+    test_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'test_reference_v2.ipynb'}}}
+    (ROOT / 'notebooks/test_reference_v2.ipynb').write_text(json.dumps(test_notebook, ensure_ascii=False, indent=1), encoding='utf-8')
     dest = ROOT / 'outputs/reference_v2_source.zip'
     dest.parent.mkdir(exist_ok=True)
     files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
@@ -95,6 +109,7 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
              'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
              'stroke_model/reference_cache.py',
              'stroke_model/local_reference_data.py',
+             'stroke_model/test_reference.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in files:

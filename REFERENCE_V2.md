@@ -169,6 +169,8 @@ Drive `HSQM/reference_v2_data/시간/` 아래 새 데이터와 결과를 저장�
 
 ## 학습 속도 수정
 
+test 평가는 `notebooks/test_reference_v2.ipynb`의 2개 셀로 실행한다. 저장된 best.pt와 test_dataset/paths.csv 경로가 기본 입력이며 학습/증강은 실행하지 않는다. test CSV 전체를 test split으로 변환하므로 샘플 1개도 평가할 수 있다. 결과의 test_macro_dice_annotated는 주석된 픽셀에 한정된 획별 평균 Dice이며 annotation_coverage를 같이 확인한다. best.pt 옆 test_results 폴더에 metrics.json과 미리보기 PNG를 저장한다. test 변환은 재사용하며 원본 이미지를 같은 경로에서 수정했다면 해당 test_data 캐시를 새로 준비해야 한다. 별도 test 폴더가 있다는 것만으로 필자/이미지 중복이 없음을 보증하지 않는다.
+
 - 네 번째 셀은 완료된 train/val NPZ를 `/content/reference_v2_local`에 병렬 복사하고 manifest 경로를 로컬로 바꾼다. 런타임 내에서는 재사용한다. NPZ 변환/증강을 다시 하지 않는다. Drive 원본을 같은 경로에서 수정했다면 로컬 캐시도 새로 준비해야 한다.
 - 체크포인트와 history는 Drive에 계속 저장한다. 학습 배치에서는 Drive를 읽지 않는다.
 - 기본 batch 8, worker 2, pin memory, persistent workers. CUDA에서는 BF16 지원 시 BF16, 그 외 FP16+GradScaler. `--no-amp`로 FP32 비교 가능.

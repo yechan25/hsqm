@@ -1,5 +1,8 @@
 # Hangul Stroke Extraction
 
+[학습 완료 모델을 test 데이터에 적용하기 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_reference_v2.ipynb)
+test 전용 노트북은 재학습 없이 저장된 best.pt로 test_dataset 전체의 주석된 픽셀 Dice와 결과 이미지를 출력합니다.
+
 ## 새 연구 모델: 기준 획 조건부 V2
 
 [구조·데이터 구축·미분 가능 지표 설계](REFERENCE_V2.md), [Colab 학습 노트북](notebooks/train_reference_v2.ipynb).

@@ -38,6 +38,11 @@ class CSVConversionTests(unittest.TestCase):
             self.assertEqual(labels[10, 7].item(), 1)
             report = json.loads((root / 'out/conversion_report.json').read_text(encoding='utf-8'))
             self.assertGreater(report['rows'][0]['overlap_pixels'], 0)
+            pd.DataFrame(rows[:1]).to_csv(root / 'single.csv', index=False)
+            test_manifest = convert_csv(root / 'single.csv', root / 'test_out', size=16, split='test')
+            test_rows = read_manifest(test_manifest)
+            self.assertEqual(len(test_rows), 1)
+            self.assertEqual(test_rows[0]['split'], 'test')
 
     def test_unicode_normalization(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -103,7 +103,9 @@ def load_ink(path, size):
     return x[None].copy()
 
 
-def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None):
+def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=None):
+    if split not in (None, 'test'):
+        raise ValueError('split must be None (train/val) or test')
     csv_path = existing_path(csv_path)
     root = existing_path(dataset_root) if dataset_root else csv_path.parent
     resolve = Resolver(csv_path, root)
@@ -169,20 +171,22 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None):
         except (ValueError, FileNotFoundError) as exc:
             raise ValueError(f'CSV 데이터 {index + 1}번째 행: {exc}') from exc
     groups = sorted({r['group_id'] for r in rows})
-    if len(groups) < 2:
+    if not rows:
+        raise ValueError('CSV에 데이터가 없습니다')
+    if split is None and len(groups) < 2:
         raise ValueError('검증 분리를 위해 최소 2개 필자/원본 그룹이 필요합니다')
     random.Random(seed).shuffle(groups)
     validation = set(groups[:max(1, round(len(groups) * .2))])
     for row in rows:
-        row['split'] = 'val' if row['group_id'] in validation else 'train'
+        row['split'] = split or ('val' if row['group_id'] in validation else 'train')
     manifest = output / 'manifest.json'
     manifest.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8')
     report = {'csv': str(csv_path), 'columns': cols, 'group_column': group_col,
-              'split_note': '필자 그룹 분할' if group_col else '원본 이미지 분할: 필자 일반화 평가는 아님',
+              'split_note': '전체 test 전용, 학습/증강 없음' if split == 'test' else ('필자 그룹 분할' if group_col else '원본 이미지 분할: 필자 일반화 평가는 아님'),
               'label_policy': '단독 소유 전경만 감독; 교차/미할당은 -1. CSV 획 순서가 대응한다고 가정.',
               'rows': reports}
     (output / 'conversion_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(f"변환 완료: train={sum(r['split']=='train' for r in rows)}, val={sum(r['split']=='val' for r in rows)}")
+    print(f"변환 완료: train={sum(r['split']=='train' for r in rows)}, val={sum(r['split']=='val' for r in rows)}, test={sum(r['split']=='test' for r in rows)}")
     print(report['split_note'])
     print(f"평균 정답 커버리지: {np.mean([r['annotation_coverage'] for r in reports]):.1%}; 겹침/누락은 평가에서 제외됩니다.")
     print('획 순서의 의미적 대응은 자동 검증되지 않습니다. conversion_report.json과 미리보기를 확인하세요.')
