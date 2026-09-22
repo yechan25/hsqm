@@ -103,6 +103,18 @@ metrics = run_test(checkpoint, test_csv, preview_count=5)
 ''')
     test_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'test_reference_v2.ipynb'}}}
     (ROOT / 'notebooks/test_reference_v2.ipynb').write_text(json.dumps(test_notebook, ensure_ascii=False, indent=1), encoding='utf-8')
+    cells = []
+    markdown('# 학습 원본 / 검증 진단\n재학습하지 않습니다. 원본 train과 val 전체를 비교하고, '
+             '각 분할에서 낮은 Dice·낮은 정답 커버리지·높은 Dice 예시를 표시합니다. 증강 이미지는 제외합니다.\n')
+    cells.append(setup_cell)
+    code('''from google.colab import drive
+drive.mount("/content/drive")
+from stroke_model.diagnose_reference import run_diagnosis
+checkpoint = "/content/drive/Shareddrives/2026 자율연구/HSQM/reference_v2_data/20260919_114512_509544/reference_v2_run_20260919_124839/best.pt"
+summary = run_diagnosis(checkpoint, examples_per_split=3)
+''')
+    diagnosis_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'diagnose_reference_v2.ipynb'}}}
+    (ROOT / 'notebooks/diagnose_reference_v2.ipynb').write_text(json.dumps(diagnosis_notebook, ensure_ascii=False, indent=1), encoding='utf-8')
     dest = ROOT / 'outputs/reference_v2_source.zip'
     dest.parent.mkdir(exist_ok=True)
     files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
@@ -111,6 +123,7 @@ metrics = run_test(checkpoint, test_csv, preview_count=5)
              'stroke_model/reference_cache.py',
              'stroke_model/local_reference_data.py',
              'stroke_model/test_reference.py',
+             'stroke_model/diagnose_reference.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in files:

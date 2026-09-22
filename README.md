@@ -1,5 +1,8 @@
 # Hangul Stroke Extraction
 
+[학습 원본과 검증 데이터의 오류 진단 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/diagnose_reference_v2.ipynb)
+원본 train/val 점수·정답 커버리지와 기준 획/변형 힌트/정답/soft/exclusive를 비교합니다. 재학습하지 않습니다.
+
 [학습 완료 모델을 test 데이터에 적용하기 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_reference_v2.ipynb)
 test 전용 노트북은 재학습 없이 저장된 best.pt로 test_dataset 전체의 주석된 픽셀 Dice와 결과 이미지를 출력합니다.
 
