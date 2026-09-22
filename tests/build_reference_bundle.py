@@ -91,7 +91,8 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
     setup_cell = cells[1]
     cells = []
     markdown('# V2 test 데이터 평가\n학습하지 않습니다. 저장된 best.pt로 test_dataset 전체를 평가합니다. '
-             '첫 실행은 test 이미지를 변환하고 이후에는 재사용합니다. GPU를 선택하고 두 셀을 실행하세요.\n')
+             '첫 실행은 test 이미지를 변환하고 이후에는 재사용합니다. GPU를 선택하고 두 셀을 실행하세요. '
+             'exclusive 결과와 함께 획별 확률·soft mask·불확실성 지도를 표시하고 저장합니다.\n')
     cells.append(setup_cell)
     code('''from google.colab import drive
 drive.mount("/content/drive")

@@ -169,6 +169,24 @@ Drive `HSQM/reference_v2_data/시간/` 아래 새 데이터와 결과를 저장�
 
 ## 학습 속도 수정
 
+### Soft mask 확인 및 확산 적용 권고
+
+test 미리보기는 exclusive 외에 기준 획, softmax 소속 확률 p_k, M_k=Input*p_k를 획별로 표시한다.
+확률 지도는 배경을 가려 표시할 뿐 원본 p는 그대로 NPZ에 저장한다. soft mask에는 threshold/argmax/획별 최대값 정규화를 적용하지 않는다.
+모든 획은 고정 0..1 범위로 표시한다. 정규화 entropy는 0이면 확신, 1이면 유효 획들에 균등 분배한 상태다.
+낮은 entropy가 정확한 예측을 보증하지는 않는다. 저장되는 *_soft.npz는 probabilities, soft_masks, entropy, active, image, reference_strokes를 포함한다.
+이 시각화는 detach/no_grad를 사용한다. 확산 학습에서는 preview 함수를 호출하지 말고 모델의 원래 torch 출력을 사용한다.
+
+현재 partial-label Dice가 높아도 회색 영역의 획 대응은 검증되지 않는다. 충분한 전경을 검수한 소규모 gold test로 픽셀 소속/획별 형태를 다시 평가한 뒤 강한 guidance를 사용한다.
+권장 시작 실험은 고정된 확산 모델의 깨끗한 이미지 추정값 x0에 추출기를 적용하는 약한 보조 guidance다.
+latent diffusion이면 differentiable VAE decode → 고정된 글자 crop/resize → 연속적인 grayscale/ink 변환 → frozen extractor → soft masks → 비교 손실 순서다.
+추출기 및 VAE 파라미터는 고정하되 입력 gradient를 차단하지 않는다. scheduler가 epsilon/v/sample/flow 중 무엇을 예측하는지에 따라 x0 추정과 업데이트 식이 달라지므로 공통 임의 업데이트 식을 넣지 않는다.
+초기에는 픽셀별 강한 획 Dice보다 검수된 획의 면적/중심, 필요한 경우 공분산을 낮은 가중치로 사용한다. 크기/위치까지 달라져야 하는 목표라면 해당 손실은 제외한다.
+큰 노이즈 구간은 피하고 글자가 드러나는 중후반 구간부터 적용하는 것을 실험 시작점으로 삼는다. 구간/가중치는 최적값이 아니며 같은 seed에서 guidance 없음/약함을 비교해 선택한다.
+모델 confidence만으로 맞는 획을 판별할 수 없으므로 검수된 고정 획 가중치를 우선 사용한다. 작은 질량의 획 모멘트는 불안정하다.
+강도를 올렸을 때 점수만 좋아지고 실제 글자가 나빠지는지 독립 지표·사람 평가로 확인한다. 현재 저장소에는 범용 확산 sampler 연결을 추가하지 않았으며 사용할 확산 모델과 scheduler를 정한 후 구현해야 한다.
+근거: [Universal Guidance for Diffusion Models](https://arxiv.org/abs/2302.07121). 위 소규모 한글 적용 순서는 해당 논문의 직접적인 성능 보장이 아닌 본 프로젝트의 제안이다.
+
 test 평가는 `notebooks/test_reference_v2.ipynb`의 2개 셀로 실행한다. 저장된 best.pt와 test_dataset/paths.csv 경로가 기본 입력이며 학습/증강은 실행하지 않는다. test CSV 전체를 test split으로 변환하므로 샘플 1개도 평가할 수 있다. 결과의 test_macro_dice_annotated는 주석된 픽셀에 한정된 획별 평균 Dice이며 annotation_coverage를 같이 확인한다. best.pt 옆 test_results 폴더에 metrics.json과 미리보기 PNG를 저장한다. test 변환은 재사용하며 원본 이미지를 같은 경로에서 수정했다면 해당 test_data 캐시를 새로 준비해야 한다. 별도 test 폴더가 있다는 것만으로 필자/이미지 중복이 없음을 보증하지 않는다.
 
 - 네 번째 셀은 완료된 train/val NPZ를 `/content/reference_v2_local`에 병렬 복사하고 manifest 경로를 로컬로 바꾼다. 런타임 내에서는 재사용한다. NPZ 변환/증강을 다시 하지 않는다. Drive 원본을 같은 경로에서 수정했다면 로컬 캐시도 새로 준비해야 한다.
