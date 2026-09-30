@@ -115,6 +115,24 @@ summary = run_diagnosis(checkpoint, examples_per_split=3)
 ''')
     diagnosis_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'diagnose_reference_v2.ipynb'}}}
     (ROOT / 'notebooks/diagnose_reference_v2.ipynb').write_text(json.dumps(diagnosis_notebook, ensure_ascii=False, indent=1), encoding='utf-8')
+    cells = []
+    markdown('# 기존 BiFPN 결과 확인\n재학습하지 않습니다. 기존 BiFPN best.pt가 필요하며 V2 체크포인트는 사용할 수 없습니다. '
+             'raw는 후처리 없는 sigmoid 원본, legacy는 기존 후처리만 적용합니다. 그래프 보강은 어느 모드에서도 사용하지 않습니다.\n')
+    cells.append(setup_cell)
+    code('''from google.colab import drive
+drive.mount("/content/drive")
+from stroke_model.easy_inference import load_session
+checkpoint_path = "" #@param {type:"string"}
+# 비워 두면 HSQM/outputs 등의 best.pt 목록에서 선택합니다.
+session = load_session(checkpoint_path, expected_architecture="BiFPN")
+''')
+    code('''from stroke_model.easy_inference import show_bifpn_baseline
+sample_index = 0 #@param {type:"integer"}
+mode = "raw" #@param ["raw", "legacy"]
+results = show_bifpn_baseline(session, sample_index=sample_index, mode=mode)
+''')
+    baseline = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'bifpn_baseline.ipynb'}}}
+    (ROOT / 'notebooks/bifpn_baseline.ipynb').write_text(json.dumps(baseline, ensure_ascii=False, indent=1), encoding='utf-8')
     dest = ROOT / 'outputs/reference_v2_source.zip'
     dest.parent.mkdir(exist_ok=True)
     files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',

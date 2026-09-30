@@ -1,5 +1,8 @@
 # Hangul Stroke Extraction
 
+[기존 BiFPN 원본 예측 / 기존 후처리만 비교 — 셀 3개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/bifpn_baseline.ipynb)
+raw 모드는 sigmoid 원본을 그대로 표시합니다. legacy 모드는 기존 bigstroke_protected 결과를 별도 줄로 추가합니다. 새 그래프 후처리는 적용하지 않습니다. V2가 아닌 기존 BiFPN 체크포인트가 필요합니다.
+
 [학습 원본과 검증 데이터의 오류 진단 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/diagnose_reference_v2.ipynb)
 원본 train/val 점수·정답 커버리지와 기준 획/변형 힌트/정답/soft/exclusive를 비교합니다. 재학습하지 않습니다.
 

@@ -29,17 +29,24 @@ def _find_checkpoints(root):
     return list(root.glob("outputs/**/best.pt")) + list(root.glob("output/**/best.pt")) + list(root.glob("checkpoints/best.pt"))
 
 
-def load_session(checkpoint_path=""):
+def load_session(checkpoint_path="", expected_architecture=None):
     import torch
     from .utils import load_config, safe_torch_load
     from .data import StrokeDataset, set_ignore_dirnames
     from .model import SwinWarpHintStrokeModel
+    from .convert_reference_csv import existing_path
+    def resolve_existing(path):
+        try:
+            return existing_path(path)
+        except FileNotFoundError:
+            return Path(path)
 
     defaults = load_config(Path(__file__).resolve().parents[1] / "configs/base.yaml")
     roots = [Path("/content/drive/Shareddrives/2026 자율연구/HSQM"),
              Path("/content/drive/MyDrive/HSQM")]
+    roots = [resolve_existing(p) for p in roots]
     if checkpoint_path.strip():
-        chosen = Path(checkpoint_path.strip())
+        chosen = resolve_existing(checkpoint_path.strip())
         if not chosen.is_file():
             raise FileNotFoundError(f"체크포인트 파일을 찾지 못했습니다: {chosen}")
     else:
@@ -62,6 +69,8 @@ def load_session(checkpoint_path=""):
         config["bifpn_layers"] = max(layers) + 1 if layers else 0
     else:
         raise ValueError("지원하는 FPN/BiFPN 체크포인트가 아닙니다.")
+    if expected_architecture and architecture != expected_architecture:
+        raise ValueError(f'{expected_architecture} 체크포인트가 필요하지만 선택한 파일은 {architecture}입니다. 2번 셀에서 다른 파일을 선택하세요.')
     config["max_strokes"] = state["decoder.head.3.weight"].shape[0]
     model = SwinWarpHintStrokeModel(config)
     if architecture.startswith("FPN"):
@@ -72,13 +81,13 @@ def load_session(checkpoint_path=""):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).eval()
 
-    csv = Path(config["test_csv_path"])
+    csv = resolve_existing(config["test_csv_path"])
     if not csv.is_file():
         project_roots = roots + [p for p in chosen.parents if p.name == "HSQM"]
         csv = _choose([root / "dataset/test_dataset/paths.csv" for root in project_roots], "테스트 데이터 paths.csv 선택")
-    configured_root = Path(config["test_dataset_root"])
+    configured_root = resolve_existing(config["test_dataset_root"])
     # If the CSV moved, resolve its relative image paths from its new directory.
-    root = configured_root if csv == Path(config["test_csv_path"]) and configured_root.is_dir() else csv.parent
+    root = configured_root if csv == resolve_existing(config["test_csv_path"]) and configured_root.is_dir() else csv.parent
     set_ignore_dirnames(config.get("ignore_dirnames", []))
     dataset = StrokeDataset(str(csv), str(root), train=False, config=config)
     if not len(dataset):
@@ -86,7 +95,59 @@ def load_session(checkpoint_path=""):
     print(f"준비 완료: {architecture}, {device}, 테스트 이미지 {len(dataset)}장")
     print("이제 3번 셀을 실행하세요.")
     return {"model": model, "dataset": dataset, "device": device, "config": config,
-            "checkpoint_path": str(chosen)}
+            "checkpoint_path": str(chosen), "architecture": architecture}
+
+
+def show_bifpn_baseline(session, sample_index=0, mode='raw'):
+    """Raw sigmoid is never altered. Optional legacy result is a separate row."""
+    import torch
+    import matplotlib.pyplot as plt
+    if session.get('architecture') != 'BiFPN':
+        raise ValueError('BiFPN 체크포인트를 먼저 불러오세요. V2/FPN 결과와 혼동하지 않도록 제한합니다.')
+    if mode not in ('raw', 'legacy'):
+        raise ValueError('mode must be raw or legacy')
+    if not 0 <= sample_index < len(session['dataset']):
+        raise ValueError(f"이미지 번호: 0..{len(session['dataset'])-1}")
+    item = session['dataset'][sample_index]
+    prep, reference, strokes = [item[key][None].to(session['device']) for key in ('I_prep', 'I_g', 'I_G_strokes')]
+    with torch.no_grad():
+        output = session['model'](prep, reference, strokes)
+        raw = output['logits'].sigmoid().cpu()
+    legacy = None
+    if mode == 'legacy':
+        from .postprocess import postprocess_batch_predictions_seeded_partition
+        legacy = postprocess_batch_predictions_seeded_partition(raw, prep.cpu(), target_hints=strokes.cpu())
+    active = (strokes[0].sum((1, 2)) > 0).nonzero().flatten().tolist()
+    if not active:
+        raise ValueError('유효한 기준 획이 없습니다')
+    for offset in range(0, len(active), 5):
+        ids = active[offset:offset+5]
+        rows = 4 if legacy is not None else 3
+        fig, axes = plt.subplots(rows, len(ids)+1, figsize=(2.5*(len(ids)+1), 2.5*rows), squeeze=False)
+        axes[0, 0].imshow(item['I_prep'][0].numpy(), cmap='gray_r', vmin=0, vmax=1)
+        axes[0, 0].set_title('Input')
+        axes[1, 0].imshow(item['I_g'][0].numpy(), cmap='gray_r', vmin=0, vmax=1)
+        axes[1, 0].set_title('Reference')
+        for col, k in enumerate(ids, 1):
+            panels = [('Raw sigmoid', raw[0, k]), ('Reference stroke', strokes[0, k].cpu()),
+                      ('Training target (soft)', item['target_strokes'][k])]
+            if legacy is not None:
+                panels.append(('Legacy postprocess', legacy[0, k]))
+            for row, (title, values) in enumerate(panels):
+                axes[row, col].imshow(values.numpy(), cmap='gray_r', vmin=0, vmax=1)
+                axes[row, col].set_title(f'{title} #{k+1}')
+        for ax in axes.flat:
+            ax.axis('off')
+        fig.suptitle('BiFPN baseline: raw scale 0..1, no graph refinement')
+        fig.tight_layout()
+        plt.show()
+        plt.close(fig)
+    print('체크포인트:', session['checkpoint_path'])
+    print(f"이미지 {sample_index}: {item.get('char_id', '')}")
+    print('Raw sigmoid: 전경 곱하기, argmax, threshold, 그래프 보정, 획별 최대값 정규화 없음.')
+    if legacy is not None:
+        print('마지막 줄만 기존 bigstroke_protected 후처리를 적용했습니다. 그래프 보강은 사용하지 않습니다.')
+    return {'raw_masks': raw, 'legacy_masks': legacy}
 
 
 def show_result(session, sample_index=0, mode="exclusive"):
