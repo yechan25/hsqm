@@ -36,7 +36,7 @@ def compose(parts):
     return chr(0xAC00 + (initial * 21 + vowel) * 28 + final)
 
 
-def scan_jamo(source):
+def scan_jamo(source, minimum_fonts=2):
     """Index by font -> class -> slot -> semantic jamo index -> candidate paths."""
     source = existing_path(source)
     fonts = {}
@@ -66,8 +66,8 @@ def scan_jamo(source):
             bank.setdefault(slot, {}).setdefault(semantic, []).append(path)
         if classes:
             fonts[font] = classes
-    if len(fonts) < 2:
-        raise ValueError('At least two FONT_unique_images folders are needed for train/val font splits.')
+    if len(fonts) < minimum_fonts:
+        raise ValueError(f'At least {minimum_fonts} FONT_unique_images folders are needed.')
     return source, fonts
 
 
@@ -85,13 +85,13 @@ def shared_options(reference, target, class_id):
     return options
 
 
-def transform_mask(mask, rng):
+def transform_mask(mask, rng, scale_range=(.8, 1.), rotation=5., shift_fraction=20/256):
     """Independent target-jamo scale/rotation/shift on the original canvas."""
     size = mask.shape[0]
-    scale = rng.uniform(.8, 1.)
-    angle = rng.uniform(-5., 5.)
-    shift = (rng.randint(-round(size * 20 / 256), round(size * 20 / 256)),
-             rng.randint(-round(size * 20 / 256), round(size * 20 / 256)))
+    scale = rng.uniform(*scale_range)
+    angle = rng.uniform(-rotation, rotation)
+    shift = (rng.randint(-round(size * shift_fraction), round(size * shift_fraction)),
+             rng.randint(-round(size * shift_fraction), round(size * shift_fraction)))
     image = Image.fromarray(mask.astype(np.float32))
     side = max(1, round(size * scale))
     image = image.resize((side, side), Image.Resampling.BILINEAR)
@@ -100,6 +100,24 @@ def transform_mask(mask, rng):
     canvas = canvas.rotate(angle, resample=Image.Resampling.BILINEAR,
                            translate=shift, fillcolor=0.)
     return np.clip(np.asarray(canvas), 0., 1.).copy()
+
+
+def read_components(paths, size=128, workers=8):
+    """Read each original PNG once and retain both its mask and canvas size."""
+    def read(path):
+        with Image.open(path) as image:
+            shape = image.size
+            rgba = ImageOps.exif_transpose(image).convert('RGBA')
+            white = Image.new('RGBA', rgba.size, (255, 255, 255, 255))
+            gray = Image.alpha_composite(white, rgba).convert('L')
+            mask = np.asarray(gray.resize((size, size), Image.Resampling.BILINEAR), dtype=np.float32) / 255
+        if mask.mean() > .5:
+            mask = 1 - mask
+        if mask.max() <= .5:
+            raise ValueError(f'Empty component: {path}')
+        return path, (mask, shape)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(tqdm(pool.map(read, paths), total=len(paths), desc='Read source PNGs', unit='file'))
 
 
 def make_labels(masks, max_overlap):
@@ -194,20 +212,7 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
     paths = sorted({path for classes in fonts.values() for slots in classes.values()
                     for bank in slots.values() for candidates in bank.values() for path in candidates})
     print(f'Load {len(paths)} original PNGs once ({workers} workers); each font uses its own reference', flush=True)
-    def read(path):
-        with Image.open(path) as image:
-            shape = image.size
-            rgba = ImageOps.exif_transpose(image).convert('RGBA')
-            white = Image.new('RGBA', rgba.size, (255, 255, 255, 255))
-            gray = Image.alpha_composite(white, rgba).convert('L')
-            mask = np.asarray(gray.resize((size, size), Image.Resampling.BILINEAR), dtype=np.float32) / 255
-        if mask.mean() > .5:
-            mask = 1 - mask
-        if mask.max() <= .5:
-            raise ValueError(f'Empty component: {path}')
-        return path, (mask, shape)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        loaded = dict(tqdm(pool.map(read, paths), total=len(paths), desc='Read source PNGs', unit='file'))
+    loaded = read_components(paths, size, workers)
     local_root.mkdir(parents=True, exist_ok=True)
     # Fresh local output also avoids stale samples after an interrupted run.
     local = Path(tempfile.mkdtemp(prefix=key + '_', dir=local_root))

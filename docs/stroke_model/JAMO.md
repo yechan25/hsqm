@@ -75,3 +75,53 @@ learning_curves.png, val_preview 그림과 soft NPZ로 저장한다.
 TEST_CSV는 별도 held-out CSV가 준비되어 있을 때만 사용한다.
 [CSV 형식 예시](../../configs/jamo_paths_example.csv).
 주석된 픽셀에 한정된 Dice이며 기존 개별 획 분리 Dice와 직접 비교하지 않는다.
+
+## Jamo test: 변형과 폰트 일반화
+
+[Test Colab에서 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_jamo.ipynb)
+
+저장된 best.pt를 고정하여 평가한다. test에서 학습하거나 best checkpoint를 고르지 않는다.
+기본 checkpoint 경로는 대화에서 확인한 jamo_run_20261014_153935_401612/best.pt다.
+다른 학습 결과를 평가할 때는 CHECKPOINT를 수정한다.
+
+| 평가 이름 | 폰트 | 타깃 변형 |
+|---|---|---|
+| seen_standard | 학습에 사용한 폰트 | 새로운 seed, 학습과 같은 범위 |
+| seen_strong | 학습에 사용한 폰트 | 크기 65~115%, 회전 ±15°, 이동 ±20px/128 |
+| unseen_standard | train/val 모두에 없는 폰트 | 새로운 seed, 학습과 같은 범위 |
+| unseen_strong | train/val 모두에 없는 폰트 | 강한 변형 |
+
+모든 reference/input은 동일 폰트다. 같은 원본 은행에서 다른 변형을 만드는 것은
+변형에 대한 일반화 평가이며, 독립적으로 수집된 실제 손글씨 test는 아니다.
+검증 폰트는 best.pt 선택에 사용됐으므로 true unseen test에서 제외한다.
+기존 10개 폰트가 train/val에 모두 포함됐다면 새 폰트를 추가해야 unseen 평가를 할 수 있다.
+새 폰트가 없으면 unseen 모드만 건너뛰고 이유를 출력한다.
+
+새 폰트는 SOURCE_ROOT에 추가하거나 NEW_FONT_ROOT 아래에 폰트이름_unique_images 폴더를 넣는다.
+파일 형식과 클래스 공유 규칙은 기존 원본과 같다. NEW_FONT_ROOT에는 기존 SOURCE_ROOT와
+겹치는 폰트 이름을 사용하지 않는다. 새로운 TTF를 직접 렌더링하는 기능은 포함하지 않는다.
+
+기본 폰트·클래스별 최대 30개 조합이며 빠른 확인은 SAMPLES_PER_CLASS=5로 한다.
+TEST_SEED는 학습 seed와 달라야 한다. 같은 의미적 글자 조합은 허용하되,
+실제로 같은 input 픽셀 배열이 train/val/test에 반복되면 다시 변형하거나 제외한다.
+겹침 때문에 제외한 조합과 acceptance_rate도 저장하여 강한 변형의 선별 정도를 확인한다.
+
+학습 폰트와 기존 이미지 목록은 해당 실행의 원본 데이터 ZIP에서 복구한다.
+기존 run_config.json의 source/seed/생성 설정에 맞는 ZIP을 자동 식별한다.
+후보가 없거나 여러 개면 TRAINING_ARCHIVE에 실제 학습 ZIP 경로를 직접 지정한다.
+새 학습 노트북은 training_inventory.json에 실제 train/val 폰트와 이미지 해시를 별도로 저장한다.
+선택적 추가 증강을 사용한 기존 실행은 해당 augmented training_manifest를 로컬에서 복구해야
+전체 학습 이미지를 검사할 수 있다. 기본 VARIANTS=0인 실행에는 추가 복구가 필요 없다.
+
+지표는 hard argmax 분할의 자모별 macro Dice/F1/IoU/Precision/Recall이다.
+Dice와 F1은 같은 정의다. Accuracy는 주석된 전경 픽셀 기준이며 배경 정확도를 포함하지 않는다.
+애매한 교차 픽셀은 제외하므로 annotation_coverage를 함께 본다.
+Reference baseline은 원본 자모까지의 최근접 거리로 픽셀을 배정한 결과다.
+모델이 위치 단서만 사용하는 간단한 방법보다 얼마나 좋은지 비교한다.
+
+생성/평가는 Colab 로컬에서 수행하며 checkpoint 옆 jamo_test_시간 폴더에 저장한다.
+각 모드의 metrics.json에는 전체·폰트별·클래스별·샘플별 지표가 있고,
+dataset.zip에는 해당 test의 상대 경로 manifest와 NPZ가 있다.
+비교 표/차트, 일반 예제와 가장 낮은 Dice 예제, soft mask를 저장한다.
+이 구현의 테스트는 작은 synthetic fixture와 작은 backbone으로 검증했으며 실제 A100/checkpoint
+성능 점수는 사용자의 Colab 실행에서 확인해야 한다.
