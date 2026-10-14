@@ -21,7 +21,7 @@ from .convert_reference_csv import existing_path, normalized
 
 VOWELS = ((0, 1, 2, 3, 4, 5, 6, 7, 20), (8, 12, 13, 17, 18),
           (9, 10, 11, 14, 15, 16, 19))
-VERSION = 3
+VERSION = 4
 
 
 def decompose(char):
@@ -67,7 +67,7 @@ def scan_jamo(source):
         if classes:
             fonts[font] = classes
     if len(fonts) < 2:
-        raise ValueError('At least two FONT_unique_images folders are needed for cross-font samples.')
+        raise ValueError('At least two FONT_unique_images folders are needed for train/val font splits.')
     return source, fonts
 
 
@@ -143,6 +143,8 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
     """
     if samples_per_class < 1 or workers < 1 or max_attempts < 1 or not 0 <= max_overlap <= 1:
         raise ValueError('Invalid generation settings')
+    if reference_font is not None:
+        raise ValueError('Use reference_font=None: every sample now uses its own font for reference and input.')
     requested = dict(version=VERSION, source=normalized(source), reference_font=reference_font,
                      size=size, seed=seed, samples_per_class=samples_per_class,
                      max_overlap=max_overlap, max_attempts=max_attempts)
@@ -180,19 +182,10 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
         return local / 'manifest.json'
     print('Scan source component banks...', flush=True)
     source, fonts = scan_jamo(source)
-    if reference_font:
-        reference_font = normalized(reference_font)
-        if reference_font not in fonts:
-            raise ValueError(f'Unknown reference font {reference_font}; available: {sorted(fonts)}')
-    else:
-        reference_font = sorted(fonts, key=lambda name: (
-            -sum(bool(shared_options(fonts[name], target, cls)) for other, target in fonts.items()
-                 if other != name for cls in range(6)), name))[0]
-    reference = fonts[reference_font]
-    target_fonts = sorted(font for font in fonts if font != reference_font and
-                          any(shared_options(reference, fonts[font], cls) for cls in range(6)))
+    target_fonts = sorted(font for font in fonts if
+                          any(shared_options(fonts[font], fonts[font], cls) for cls in range(6)))
     if len(target_fonts) < 2:
-        raise ValueError('Need a reference font and at least two target fonts to hold out validation fonts.')
+        raise ValueError('Need at least two usable fonts to hold out validation fonts.')
     shuffled = target_fonts.copy()
     random.Random(seed).shuffle(shuffled)
     val_fonts = set(shuffled[:max(1, round(len(shuffled) * .2))])
@@ -200,7 +193,7 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
                         for cls, slots in classes.items()} for font, classes in fonts.items()}
     paths = sorted({path for classes in fonts.values() for slots in classes.values()
                     for bank in slots.values() for candidates in bank.values() for path in candidates})
-    print(f'Load {len(paths)} original PNGs once ({workers} workers); reference={reference_font}', flush=True)
+    print(f'Load {len(paths)} original PNGs once ({workers} workers); each font uses its own reference', flush=True)
     def read(path):
         with Image.open(path) as image:
             shape = image.size
@@ -226,6 +219,7 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
                   for font, classes in fonts.items() for cls, slots in classes.items()
                   for slot, bank in slots.items() for jamo, candidates in bank.items() if len(candidates) > 1]
     for font in tqdm(target_fonts, desc='Compose locally', unit='font'):
+        reference = fonts[font]
         for cls in range(6):
             options = shared_options(reference, fonts[font], cls)
             if not options:
@@ -259,7 +253,7 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
                                     strokes=ref_masks, labels=labels)
                 rows.append(dict(path=path.as_posix(), split='val' if font in val_fonts else 'train',
                                  group_id='font:' + font, char_id=compose(parts), class_id=cls,
-                                 font=font, reference_font=reference_font, component_slots=list(range(count)),
+                                 font=font, reference_font=font, component_slots=list(range(count)),
                                  jamo_indices=list(parts), reference_components=[normalized(p.name) for p in ref_paths],
                                  target_components=[normalized(p.name) for p in target_paths], source='composed_jamo'))
                 foreground = image[0] > .5
@@ -270,8 +264,8 @@ def prepare_jamo(source, cache_root, reference_font=None, size=128, seed=42, reb
                                     overlap_canvas_ratio=overlap))
     if {row['split'] for row in rows} != {'train', 'val'}:
         raise ValueError('No usable train/val samples after overlap filtering. Inspect masks/settings.')
-    report = dict(source=str(source), reference_font=reference_font, inventory=inventory,
-                  split_note='Target-font holdout before composition; reference font excluded from targets.',
+    report = dict(source=str(source), reference_font='same_font', reference_mode='same_font', inventory=inventory,
+                  split_note='Font holdout before composition; reference and input use the same font per sample.',
                   validation_fonts=sorted(val_fonts), rows=reports, skipped=skipped,
                   duplicate_semantic_candidates=duplicates,
                   composition='Class-shared semantic jamo; transformed target masks merged with pixelwise maximum.',

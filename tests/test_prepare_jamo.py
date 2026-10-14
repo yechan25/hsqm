@@ -18,11 +18,12 @@ class JamoPreparationTests(unittest.TestCase):
         # No character has a full set of source files: every slot is shared.
         names = ('0_0_가.png', '0_0_까.png', '0_1_아.png', '0_1_애.png',
                  '3_0_각.png', '3_1_난.png', '3_2_긱.png')
+        width = {'ref': 6, 'target_a': 7, 'target_b': 8}[name]
         for name in names:
             slot = int(name.split('_')[1])
             ink = np.zeros((24, 24), np.uint8)
             if slot == 0:
-                ink[2:5, 2:8] = 255
+                ink[2:5, 2:2+width] = 255
             elif slot == 1:
                 ink[8:15, 16:19] = 255
             else:
@@ -37,7 +38,7 @@ class JamoPreparationTests(unittest.TestCase):
         return source
 
     def build(self, root, source, **kwargs):
-        return prepare_jamo(source, root / 'drive_cache', reference_font='ref', size=24,
+        return prepare_jamo(source, root / 'drive_cache', size=24,
                             local_root=root / 'local', samples_per_class=4, workers=2, **kwargs)
 
     def test_shared_semantic_composition_font_split_and_training(self):
@@ -46,18 +47,21 @@ class JamoPreparationTests(unittest.TestCase):
             source = self.prepare_fixture(root)
             manifest = self.build(root, source)
             rows = json.loads(manifest.read_text(encoding='utf-8'))
-            self.assertEqual(len(rows), 10)
+            self.assertEqual(len(rows), 15)
+            self.assertEqual({r['font'] for r in rows}, {'ref', 'target_a', 'target_b'})
             self.assertEqual({r['char_id'] for r in rows}, {'가', '개', '까', '깨', '각'})
             train = {r['font'] for r in rows if r['split'] == 'train'}
             val = {r['font'] for r in rows if r['split'] == 'val'}
             self.assertTrue(train and val and train.isdisjoint(val))
             for row in rows:
+                self.assertEqual(row['reference_font'], row['font'])
                 self.assertEqual(decompose(row['char_id']), tuple(row['jamo_indices']))
                 self.assertFalse(Path(row['path']).is_absolute())
                 with np.load(manifest.parent / row['path']) as sample:
                     k = 3 if row['char_id'] == '각' else 2
                     self.assertEqual(sample['strokes'].shape, (k, 24, 24))
-                    self.assertEqual(sample['strokes'][0].sum(), 18)
+                    expected = {'ref': 18, 'target_a': 21, 'target_b': 24}[row['font']]
+                    self.assertEqual(sample['strokes'][0].sum(), expected)
                     np.testing.assert_array_equal(sample['reference'], sample['strokes'].max(0, keepdims=True))
                     self.assertEqual(set(np.unique(sample['labels'])), {-1, *range(k)})
             ga = next(r for r in rows if r['char_id'] == '가')
@@ -89,7 +93,7 @@ class JamoPreparationTests(unittest.TestCase):
             first = self.build(root, source)
             # Restore to a different runtime directory without reopening source images.
             with patch('stroke_model.prepare_jamo.scan_jamo', side_effect=AssertionError('rescan')):
-                restored = prepare_jamo(source, root / 'drive_cache', reference_font='ref', size=24,
+                restored = prepare_jamo(source, root / 'drive_cache', size=24,
                                         local_root=root / 'new_runtime', samples_per_class=4, workers=2)
             rows = json.loads(restored.read_text(encoding='utf-8'))
             self.assertTrue(all((restored.parent / r['path']).is_file() for r in rows))
