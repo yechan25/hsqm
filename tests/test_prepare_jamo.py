@@ -14,7 +14,7 @@ class JamoPreparationTests(unittest.TestCase):
     def make_font(self, source, name, offset=0):
         folder = source / (name + '_unique_images')
         folder.mkdir(parents=True)
-        for index, char in enumerate(('가', '각')):
+        for class_id, char in ((0, '가'), (3, '각')):
             for slot in range(3 if char == '각' else 2):
                 ink = np.zeros((24, 24), np.uint8)
                 if slot == 0:
@@ -23,7 +23,7 @@ class JamoPreparationTests(unittest.TestCase):
                     ink[3:17, 10+offset:14+offset] = 255
                 else:
                     ink[19:23, 3:19] = 255
-                Image.fromarray(255 - ink).save(folder / f'{index}_{slot}_{char}.png')
+                Image.fromarray(255 - ink).save(folder / f'{class_id}_{slot}_{char}.png')
         return folder
 
     def test_union_thickness_overlap_correspondence_and_font_holdout(self):
@@ -83,14 +83,41 @@ class JamoPreparationTests(unittest.TestCase):
             self.assertEqual({r['split'] for r in rows}, {'train', 'val'})
             self.assertTrue(all(r['group_id'].startswith('char:') for r in rows))
 
-    def test_missing_final_rejected_but_no_final_syllable_valid(self):
+    def test_incomplete_bundle_is_reported_and_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp)
             folder = self.make_font(source, 'ref')
             self.make_font(source, 'target')
             scan_jamo(source)
-            (folder / '1_2_각.png').unlink()
-            with self.assertRaisesRegex(ValueError, 'expected slots'):
+            self.make_font(source, 'target_b', 2)
+            (folder / '3_2_각.png').unlink()
+            _, fonts, _ = scan_jamo(source)
+            self.assertEqual(fonts['ref'][(3, '각')]['missing_slots'], [2])
+            manifest = prepare_jamo(source, source / 'cache', reference_font='target', size=24)
+            rows = json.loads(manifest.read_text(encoding='utf-8'))
+            self.assertFalse(any(r['font'] == 'ref' and r['char_id'] == '각' for r in rows))
+            report = json.loads((manifest.parent / 'conversion_report.json').read_text(encoding='utf-8'))
+            self.assertEqual(report['skipped_incomplete'][0]['missing_slots'], [2])
+
+    def test_same_class_has_multiple_characters_and_distinct_bundle_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            for font in ('ref', 'target', 'target_b'):
+                folder = self.make_font(source, font)
+                for slot in (0, 1):
+                    (folder / f'0_{slot}_까.png').write_bytes((folder / f'0_{slot}_가.png').read_bytes())
+            manifest = prepare_jamo(source, source / 'cache', reference_font='ref', size=24)
+            rows = json.loads(manifest.read_text(encoding='utf-8'))
+            self.assertEqual({(r['class_id'], r['char_id']) for r in rows}, {(0, '가'), (0, '까'), (3, '각')})
+            self.assertEqual(len(rows), 6)
+
+    def test_class_range_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            folder = self.make_font(source, 'ref')
+            self.make_font(source, 'target')
+            (folder / '0_0_가.png').rename(folder / '6_0_가.png')
+            with self.assertRaisesRegex(ValueError, '0..5'):
                 scan_jamo(source)
 
     def test_mismatched_canvas_rejected(self):
