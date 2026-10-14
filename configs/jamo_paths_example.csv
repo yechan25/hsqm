@@ -1,0 +1,3 @@
+I_prep,I_g,I_G_strokes,input_stroke_paths,writer_id,char_id
+input/ga_001.png,reference/ga.png,"['reference/ga_giyeok.png', 'reference/ga_a.png']","['labels/ga_001_giyeok.png', 'labels/ga_001_a.png']",writer_A,가
+input/ga_002.png,reference/ga.png,"['reference/ga_giyeok.png', 'reference/ga_a.png']","['labels/ga_002_giyeok.png', 'labels/ga_002_a.png']",writer_B,가

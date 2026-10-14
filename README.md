@@ -16,6 +16,7 @@
 
 ## 획 분리 모델
 
+- 굵은 자모 마스크 학습: [Jamo Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/jamo.ipynb) — [데이터 준비와 실행](docs/stroke_model/JAMO.md)
 - 최신 구현: **기준 획 조건부 V2 (`ReferenceStrokeModel`)** — [구조와 데이터 설계](docs/stroke_model/REFERENCE_V2.md)
 - 기존 모델: **Swin + Warp Hint + Cross-Attention + BiFPN (`SwinWarpHintStrokeModel`)**
 - [학습·추론·Colab 실행 안내](docs/stroke_model/README.md)
