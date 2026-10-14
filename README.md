@@ -1,86 +1,42 @@
-# Hangul Stroke Extraction
+# HSQM
 
-[기존 BiFPN 원본 예측 / 기존 후처리만 비교 — 셀 3개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/bifpn_baseline.ipynb)
-raw 모드는 sigmoid 원본을 그대로 표시합니다. legacy 모드는 기존 bigstroke_protected 결과를 별도 줄로 추가합니다. 새 그래프 후처리는 적용하지 않습니다. V2가 아닌 기존 BiFPN 체크포인트가 필요합니다.
+한글 이미지 연구 코드와 실험을 관리하는 공용 저장소입니다. 모델 업데이트는 이 저장소의 커밋 이력에서 확인합니다.
 
-[학습 원본과 검증 데이터의 오류 진단 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/diagnose_reference_v2.ipynb)
-원본 train/val 점수·정답 커버리지와 기준 획/변형 힌트/정답/soft/exclusive를 비교합니다. 재학습하지 않습니다.
+## 폴더 안내
 
-[학습 완료 모델을 test 데이터에 적용하기 — 셀 2개](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_reference_v2.ipynb)
-test 전용 노트북은 재학습 없이 저장된 best.pt로 test_dataset 전체의 주석된 픽셀 Dice와 결과 이미지를 출력합니다.
+| 경로 | 용도 |
+|---|---|
+| [stroke_model/](stroke_model/) | 획 분리 모델, 학습·추론·후처리 및 관련 데이터 처리 코드 |
+| [font_test/](font_test/) | 폰트 관련 실험 코드와 설정을 위한 공간 |
+| [configs/](configs/) | 모델 학습 설정 |
+| [notebooks/](notebooks/) | Colab 실행 및 결과 확인 노트북 |
+| [tests/](tests/) | 코드 검증 및 배포 묶음 생성 도구 |
+| [docs/stroke_model/](docs/stroke_model/) | 획 분리 모델 설명 및 실행 안내 |
+| [diagnostics/](diagnostics/) | 버전 관리하는 소규모 진단 예시 |
 
-## 새 연구 모델: 기준 획 조건부 V2
+## 획 분리 모델
 
-[구조·데이터 구축·미분 가능 지표 설계](REFERENCE_V2.md), [Colab 학습 노트북](notebooks/train_reference_v2.ipynb).
-[V2 학습을 Colab에서 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_reference_v2.ipynb)
-첫 셀에서 GitHub 코드를 받고, 두 번째 셀에서 기존 train_dataset/paths.csv를 자동 변환합니다.
-이후 train 증강 → 학습 → 검증 결과 표시까지 5개 셀로 실행합니다.
-완료된 변환·동일 설정의 증강 데이터는 Drive에서 재사용합니다. 이미지 내용을 같은 경로에서 수정했다면 두 번째 셀의 `rebuild=True`로 다시 만드세요.
-학습 셀은 데이터를 `/content`로 한 번 복사한 뒤 로컬에서 읽습니다. 기본 batch=8, CUDA 혼합 정밀도(A100은 BF16), 데이터 로더 worker=2를 사용하며 체크포인트는 Drive에 저장합니다.
-동결 Swin + 공유 획 추출 헤드. 실제 데이터 학습 전이며 기존 체크포인트와 호환되지 않습니다.
-아래 셀 3개 노트북은 기존 FPN/BiFPN 모델용입니다.
+- 최신 구현: **기준 획 조건부 V2 (`ReferenceStrokeModel`)** — [구조와 데이터 설계](docs/stroke_model/REFERENCE_V2.md)
+- 기존 모델: **Swin + Warp Hint + Cross-Attention + BiFPN (`SwinWarpHintStrokeModel`)**
+- [학습·추론·Colab 실행 안내](docs/stroke_model/README.md)
+- [그래프 후처리 설명](docs/stroke_model/POSTPROCESS_GRAPH.md)
 
-Swin Transformer + Warp Hint + Cross-Attention + BiFPN 기반 한글 획 분리 모델.
+최신 구현과 최고 성능 체크포인트는 별도로 구분합니다. 학습 결과를 기록할 때 코드 커밋, 설정, 데이터 버전, 평가 지표와 체크포인트 위치를 함께 남깁니다.
 
-## 가장 쉬운 실행: 셀 3개
+## 업데이트 원칙
 
-[Colab에서 간단 실행 노트북 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/easy_postprocess.ipynb)
+1. 획 분리 모델 관련 실행 코드는 `stroke_model/`에 저장합니다. 새 연구 항목은 `font_test/`처럼 별도 폴더로 구분합니다.
+2. 동작이나 구조를 바꿀 때 관련 문서·설정도 함께 갱신합니다. 노트북은 저장소의 코드를 가져와 실행하도록 유지합니다.
+3. 변경 내용을 확인하고 필요한 검증을 실행한 후 커밋하고 GitHub에 push합니다. GitHub에서 해당 커밋이 확인되어야 업로드 완료입니다.
+4. 원본 데이터, 모델 가중치, 대용량 생성 결과와 비밀 키는 커밋하지 않습니다. 데이터와 체크포인트는 Drive 등 외부 저장소에서 관리합니다.
+5. 재현할 실험은 실행 당시 Git 커밋을 기록합니다. 코드 수정만으로 학습 완료나 성능 향상을 주장하지 않습니다.
 
-1. **준비하기** 실행
-2. **Drive 연결하고 기존 모델 불러오기** 실행 (모델이 여러 개면 번호 선택)
-3. **결과 보기** 실행
-
-코드는 자동으로 받고, 기존 FPN/BiFPN 체크포인트는 구조를 확인해 불러옵니다.
-기록된 공유 Drive의 HSQM 폴더 또는 MyDrive/HSQM에서 best.pt와 테스트
-데이터를 찾습니다. 못 찾는 경우에만 파일 경로를 묻습니다.
-3번 셀에서 이미지 번호와 `mode`를 바꿀 수 있습니다. 기본 `exclusive`는
-모든 글자 픽셀을 한 획에만 배정하며, `overlap`은 중복을 허용합니다.
-결과 아래에 미배정·중복·배경 침범을 표시합니다. 모드 변경 후에는 3번 셀만
-다시 실행하세요. 재학습하지 않습니다.
-
-## 교차점 공유 후처리
-
-`stroke_model/graph_postprocess.py`에 교차점의 중복을 허용하는 graph 기반
-후처리를 추가했습니다. 큰 획 우선/분기점 제거 규칙 대신 모델 출력과 정렬된
-힌트, 이웃 간 연속성을 함께 최적화합니다. 재학습 없이 사용 가능합니다.
-사용법과 한계는 [POSTPROCESS_GRAPH.md](POSTPROCESS_GRAPH.md)를 참고하세요.
-실제 데이터에서의 성능 개선은 아직 검증되지 않았습니다.
-
-[Colab에서 학습/후처리 비교 노트북 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_bifpn.ipynb)
-
-기존 체크포인트만 평가할 경우: 코드 받기, Drive 마운트, config 로드 셀을
-실행하고 `from stroke_model.utils import get_device; device = get_device()`로
-device를 준비한 뒤 8절의 체크포인트 로드와 9절의 후처리 비교를 실행합니다.
-6절의 학습 셀은 실행할 필요가 없습니다. `config['out_dir']`는 기존
-`checkpoints/best.pt`가 들어 있는 출력 폴더로 지정하세요.
-
-## 구조
-
+```bash
+git pull --ff-only
+# 파일 수정 및 필요한 검증
+git status
+git diff
+git add <변경한 파일 경로>
+git commit -m "Describe the change"
+git push origin main
 ```
-stroke_model/
-    model.py       # SwinWarpHintStrokeModel (decoder: BiFPN + CoordAttention)
-    losses.py       # dice/bce/fp/coverage/flow-smooth/hint-aux loss
-    data.py          # StrokeDataset, augmentation, path resolution
-    train.py         # 학습 루프 (run_training)
-configs/
-    base.yaml        # 학습 설정
-```
-
-## 사용법 (Colab)
-
-```python
-!git clone https://github.com/<아이디>/<레포이름>.git
-%cd <레포이름>
-!pip install -q -r requirements.txt
-
-from stroke_model.utils import load_config
-from stroke_model.train import run_training
-
-config = load_config("configs/base.yaml")
-config["dataset_root"] = "..."  # 필요시 경로 override
-model, history = run_training(config)
-```
-
-## 변경 이력
-
-- v1: `01_Training.ipynb` / `02_Use.ipynb`에서 코드 분리, decoder를 FPN -> BiFPN + Coordinate Attention으로 교체

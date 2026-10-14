@@ -15,3 +15,16 @@ data_v2/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local secrets and tooling
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.pytest_cache/
+.ruff_cache/
+
+# Font experiment local assets and generated results
+font_test/data/
+font_test/outputs/

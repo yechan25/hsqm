@@ -17,7 +17,7 @@ def main():
     markdown('# 기준 획 모델 V2\nGPU 런타임을 선택하세요. 학습된 모델이 아니라 새 모델의 학습 노트북입니다.\n'
              '첫 셀이 실제 GitHub 저장소에서 코드를 자동으로 받습니다. ZIP 업로드는 필요 없습니다. '
              '두 번째 셀이 기존 paths.csv를 자동 변환합니다. 기준/정답 획은 CSV에서 같은 순서여야 합니다. '
-             '데이터 형식은 REFERENCE_V2.md를 참조하세요. 기존 best.pt와는 호환되지 않습니다.\n')
+             '데이터 형식은 docs/stroke_model/REFERENCE_V2.md를 참조하세요. 기존 best.pt와는 호환되지 않습니다.\n')
     code('''from pathlib import Path
 import sys, subprocess, tempfile
 root = Path(tempfile.mkdtemp(prefix="reference_v2_", dir="/content"))
@@ -135,7 +135,7 @@ results = show_bifpn_baseline(session, sample_index=sample_index, mode=mode)
     (ROOT / 'notebooks/bifpn_baseline.ipynb').write_text(json.dumps(baseline, ensure_ascii=False, indent=1), encoding='utf-8')
     dest = ROOT / 'outputs/reference_v2_source.zip'
     dest.parent.mkdir(exist_ok=True)
-    files = ['requirements.txt', 'REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
+    files = ['requirements.txt', 'docs/stroke_model/REFERENCE_V2.md', 'stroke_model/__init__.py', 'stroke_model/utils.py',
              'stroke_model/reference_model.py', 'stroke_model/train_reference.py', 'stroke_model/augment_reference.py',
              'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
              'stroke_model/reference_cache.py',
