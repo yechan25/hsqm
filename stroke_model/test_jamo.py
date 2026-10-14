@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from .convert_reference_csv import existing_path, normalized
-from .prepare_jamo import scan_jamo, read_components, shared_options, transform_mask, make_labels, compose
+from .prepare_jamo import scan_jamo, read_components, shared_options, transform_mask, make_labels, compose, _unpack
 from .preview_reference import preview_reference
 from .reference_model import ReferenceStrokeModel
 from .train_reference import read_manifest, StrokeDataset, collate
@@ -27,6 +27,44 @@ PROFILES = {
     'standard': dict(scale_range=(.8, 1.), rotation=5., shift_fraction=20/256),
     'strong': dict(scale_range=(.65, 1.15), rotation=15., shift_fraction=40/256),
 }
+
+
+def font_preview_indices(rows, count_per_font=1):
+    """Show every font, preferring distinct classes for additional examples."""
+    indices = []
+    for font in sorted({r['font'] for r in rows}):
+        candidates = [i for i, row in enumerate(rows) if row['font'] == font]
+        selected, classes = [], set()
+        for i in candidates:
+            if rows[i]['class_id'] not in classes:
+                selected.append(i)
+                classes.add(rows[i]['class_id'])
+        selected.extend(i for i in candidates if i not in selected)
+        indices.extend(selected[:max(0, count_per_font)])
+    return indices
+
+
+def preview_saved_tests(checkpoint, result_dir, count_per_font=1, local_root='/content/jamo_test_preview'):
+    """Redisplay existing ZIP results by font, without generation or evaluation."""
+    checkpoint, result_dir = existing_path(checkpoint), existing_path(result_dir)
+    summary = json.loads((result_dir / 'summary.json').read_text(encoding='utf-8'))
+    Path(local_root).mkdir(parents=True, exist_ok=True)
+    for name, result in summary['tests'].items():
+        if result['status'] != 'evaluated':
+            print(name, 'skipped:', result['reason'])
+            continue
+        archive = result_dir / name / 'dataset.zip'
+        with tempfile.TemporaryDirectory(dir=local_root) as tmp:
+            cached = Path(tmp) / 'dataset.zip'
+            shutil.copyfile(archive, cached)
+            folder = Path(tmp) / 'dataset'
+            _unpack(cached, folder)
+            manifest = folder / 'manifest.json'
+            rows = read_manifest(manifest)
+            selected = font_preview_indices(rows, count_per_font)
+            print(name, '| fonts:', sorted({r['font'] for r in rows}), flush=True)
+            preview_reference(manifest, checkpoint, split='test', sample_indices=selected,
+                              context_title=name, show_soft=False)
 
 
 def image_digest(image):
@@ -306,9 +344,13 @@ def run_jamo_test(checkpoint, source_root=None, new_font_root=None, training_arc
         shutil.copyfile(packed, destination / 'dataset.zip')
         print(name, json.dumps(metrics['overall'], ensure_ascii=False), flush=True)
         if preview_count > 0:
-            preview_reference(manifest, checkpoint, count=preview_count, split='test', save_dir=destination)
+            selected_indices = font_preview_indices(new_rows, preview_count)
+            print('Preview by font:', name, selected, flush=True)
+            preview_reference(manifest, checkpoint, split='test', save_dir=destination,
+                              sample_indices=selected_indices, context_title=name, show_soft=False)
             worst = min(metrics['per_sample'], key=lambda row: row['metrics']['dice'])
-            preview_reference(manifest, checkpoint, count=1, split='test', start=worst['sample_index'], save_dir=destination)
+            preview_reference(manifest, checkpoint, count=1, split='test', start=worst['sample_index'],
+                              save_dir=destination, context_title=name + ' | lowest Dice')
         results[name] = metrics
     summary = dict(checkpoint=str(checkpoint), checkpoint_epoch=state['epoch'],
                    training_archive=provenance['training_archive'], train_fonts=provenance['train_fonts'],

@@ -125,3 +125,12 @@ dataset.zip에는 해당 test의 상대 경로 manifest와 NPZ가 있다.
 비교 표/차트, 일반 예제와 가장 낮은 Dice 예제, soft mask를 저장한다.
 이 구현의 테스트는 작은 synthetic fixture와 작은 backbone으로 검증했으며 실제 A100/checkpoint
 성능 점수는 사용자의 Colab 실행에서 확인해야 한다.
+
+### 폰트별 미리보기
+
+각 평가 모드에서 PREVIEW_COUNT개를 **폰트마다** 표시한다. 기본값은 폰트마다 1개다.
+그림 제목에 평가 모드, 폰트 이름, 클래스, 샘플 번호를 표시하며 일반/강한 변형을 구분한다.
+전체 예제에는 soft 패널을 생략하고, 가장 낮은 Dice 예제에는 soft 패널도 표시한다.
+마지막 셀의 preview_saved_tests는 이미 저장한 dataset.zip만 읽어 폰트별 예제를 다시 표시한다.
+생성·평가를 다시 실행할 필요가 없다. 새 폰트가 없어서 unseen 평가를 건너뛴 경우에는
+새 폰트 비교 그림도 없으며, NEW_FONT_ROOT에 학습/검증에 없던 폰트 원본을 추가해야 한다.

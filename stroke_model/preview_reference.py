@@ -57,10 +57,13 @@ def show_soft_strokes(image, strokes, output, prefix=None):
     plt.close(figure)
 
 
-def preview_reference(manifest, checkpoint=None, count=3, split='val', start=0, save_dir=None, show_soft=True):
+def preview_reference(manifest, checkpoint=None, count=3, split='val', start=0, save_dir=None, show_soft=True,
+                      sample_indices=None, context_title=None):
     import matplotlib.pyplot as plt
     from .reference_model import ReferenceStrokeModel
-    rows = [r for r in read_manifest(manifest) if r['split'] == split][start:start+count]
+    all_rows = [r for r in read_manifest(manifest) if r['split'] == split]
+    indices = list(sample_indices) if sample_indices is not None else list(range(start, min(start+count, len(all_rows))))
+    rows = [all_rows[index] for index in indices]
     size = 128
     model = None
     if checkpoint is not None:
@@ -90,15 +93,21 @@ def preview_reference(manifest, checkpoint=None, count=3, split='val', start=0, 
             panels.append((colored(prediction, image[0].numpy() > .5), 'Prediction: exclusive'))
         figure, axes = plt.subplots(1, len(panels), figsize=(3 * len(panels), 3))
         for ax, (content, title) in zip(axes, panels):
-            ax.imshow(content, cmap='gray_r', vmin=0, vmax=1)
+            ax.imshow(content, cmap='gray_r', vmin=0, vmax=1, interpolation='nearest')
             ax.set_title(title)
             ax.axis('off')
+        row = rows[i]
+        caption = ' | '.join(str(value) for value in (context_title, row.get('font'),
+                            f'class {row["class_id"]}' if 'class_id' in row else None,
+                            f'sample {indices[i]}') if value is not None)
+        if caption:
+            figure.suptitle(caption)
         plt.tight_layout()
         if save_dir is not None:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            figure.savefig(Path(save_dir) / f'{split}_{start+i:04d}.png', dpi=140)
+            figure.savefig(Path(save_dir) / f'{split}_{indices[i]:04d}.png', dpi=140)
         plt.show()
         plt.close(figure)
         if model is not None and show_soft:
-            prefix = Path(save_dir) / f'{split}_{start+i:04d}' if save_dir is not None else None
+            prefix = Path(save_dir) / f'{split}_{indices[i]:04d}' if save_dir is not None else None
             show_soft_strokes(image, strokes, out, prefix=prefix)
