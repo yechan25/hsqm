@@ -108,6 +108,7 @@ def main():
     p.add_argument('--local-cache', default=None)
     p.add_argument('--image-size', type=int, default=128)
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--init-checkpoint', default=None, help='Compatible V2 weights; starts a new optimizer/run')
     args = p.parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -133,11 +134,18 @@ def main():
                                    persistent_workers=args.num_workers > 0)
         print(f'{split}: {len(dataset)} samples, {len(loaders[split])} batches', flush=True)
     print('Loading Swin pretrained weights...', flush=True)
-    model = ReferenceStrokeModel(image_size=args.image_size).to(device)
+    model = ReferenceStrokeModel(image_size=args.image_size, pretrained=not bool(args.init_checkpoint)).to(device)
+    if args.init_checkpoint:
+        checkpoint = torch.load(args.init_checkpoint, map_location='cpu', weights_only=True)
+        if checkpoint.get('architecture') != 'reference_v2' or checkpoint.get('image_size') != args.image_size:
+            raise ValueError('초기 가중치는 image_size가 같은 reference_v2 체크포인트여야 합니다')
+        model.load_state_dict(checkpoint['model'], strict=True)
+        print('Initialized V2 weights:', args.init_checkpoint, flush=True)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=2e-4, weight_decay=.01)
     scaler = torch.amp.GradScaler('cuda', enabled=amp and amp_dtype == torch.float16)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
+    (destination / 'run_config.json').write_text(json.dumps(vars(args), ensure_ascii=False, indent=2), encoding='utf-8')
     best, history = -1., []
     for epoch in range(args.epochs):
         model.train()

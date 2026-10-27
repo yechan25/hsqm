@@ -54,13 +54,18 @@ def path_list(value):
 
 
 class Resolver:
-    def __init__(self, csv_path, dataset_root):
+    def __init__(self, csv_path, dataset_root, local_only=False):
         self.csv_path, self.root = csv_path, dataset_root
+        self.local_only = local_only
         self.index = None
 
     def __call__(self, value):
         raw = normalized(str(value).strip().strip('\"\''))
-        for candidate in (Path(raw), self.csv_path.parent / raw, self.root / raw):
+        candidates = (Path(raw), self.csv_path.parent / raw, self.root / raw)
+        if self.local_only:
+            candidate = (self.root / raw).resolve()
+            candidates = (candidate,) if candidate.is_relative_to(self.root.resolve()) else ()
+        for candidate in candidates:
             try:
                 found = existing_path(candidate)
                 if found.is_file():
@@ -103,12 +108,12 @@ def load_ink(path, size):
     return x[None].copy()
 
 
-def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=None):
+def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=None, local_only=False):
     if split not in (None, 'test'):
         raise ValueError('split must be None (train/val) or test')
     csv_path = existing_path(csv_path)
     root = existing_path(dataset_root) if dataset_root else csv_path.parent
-    resolve = Resolver(csv_path, root)
+    resolve = Resolver(csv_path, root, local_only=local_only)
     df = pd.read_csv(csv_path)
     names = {str(c).lower(): c for c in df.columns}
     def column(*aliases, optional=False):
