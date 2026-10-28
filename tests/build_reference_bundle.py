@@ -93,7 +93,8 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
     markdown('# V2 검증 / test 평가\n기존 평가·획별 확률·soft mask·불확실성 시각화를 재사용합니다. '
              '기본 zip_val은 ZIP 학습 때 저장한 CSV/seed로 val 분할을 복원합니다. 독립 test 점수가 아닙니다. '
              '최신 ZIP 학습 실행의 best.pt를 자동 선택하며 checkpoint로 직접 지정할 수도 있습니다. '
-             '별도 test_dataset 전체 평가는 MODE="test_csv"로 선택하세요. GPU에서 두 셀을 실행합니다.\n')
+             '별도 test_dataset 전체 평가는 MODE="test_csv"로 선택하세요. 먼저 두 셀을 실행합니다. '
+             '앞부분 대신 글자별로 골고루 표시하며 마지막 셀에서는 재평가 없이 글자/개수/seed를 바꿔 볼 수 있습니다.\n')
     cells.append(setup_cell)
     code('''from google.colab import drive
 drive.mount("/content/drive")
@@ -114,6 +115,14 @@ elif MODE == "test_csv":
     metrics = run_test(checkpoint, test_csv, preview_count=5)
 else:
     raise ValueError("MODE는 zip_val 또는 test_csv여야 합니다")
+''')
+    code('''# 이미 평가했다면 이 셀만 다시 실행: ZIP 준비/전체 평가를 반복하지 않습니다.
+from stroke_model.test_reference import preview_varied
+PREVIEW_COUNT = 10
+CHARACTERS = None  # 예: ["나", "다", "한"]; None이면 여러 글자를 골고루 선택
+PREVIEW_SEED = 42  # 바꾸면 다른 샘플 표시
+preview_varied(metrics["manifest"], metrics["checkpoint"], split=metrics["split"],
+               count=PREVIEW_COUNT, characters=CHARACTERS, seed=PREVIEW_SEED)
 ''')
     test_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'test_reference_v2.ipynb'}}}
     (ROOT / 'notebooks/test_reference_v2.ipynb').write_text(json.dumps(test_notebook, ensure_ascii=False, indent=1), encoding='utf-8')

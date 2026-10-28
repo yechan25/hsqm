@@ -98,6 +98,7 @@ def preview_reference(manifest, checkpoint=None, count=3, split='val', start=0, 
             ax.axis('off')
         row = rows[i]
         caption = ' | '.join(str(value) for value in (context_title, row.get('font'),
+                            row.get('char_id') or Path(row.get('source_image', '')).name or None,
                             f'class {row["class_id"]}' if 'class_id' in row else None,
                             f'sample {indices[i]}') if value is not None)
         if caption:

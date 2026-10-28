@@ -2,6 +2,8 @@
 import gc
 import hashlib
 import json
+import random
+import re
 from datetime import datetime
 from pathlib import Path
 import torch
@@ -11,6 +13,58 @@ from .reference_cache import complete_manifest
 from .reference_model import ReferenceStrokeModel
 from .train_reference import read_manifest, StrokeDataset, collate, evaluate
 from .preview_reference import preview_reference
+
+
+def preview_character(row):
+    value = str(row.get('char_id', '')).strip()
+    if value and value.lower() not in ('nan', 'none'):
+        return value
+    # Only isolated Hangul syllables in the filename; never infer from font directories.
+    tokens = re.findall(r'(?<![가-힣])[가-힣](?![가-힣])', Path(row.get('source_image', '')).stem)
+    return tokens[-1] if len(tokens) == 1 else None
+
+
+def select_preview_indices(rows, count=5, characters=None, seed=42):
+    """Round-robin characters before taking another example of the same character."""
+    if count < 0:
+        raise ValueError('count must be nonnegative')
+    requested = set(characters) if characters is not None else None
+    groups = {}
+    for index, row in enumerate(rows):
+        char = preview_character(row)
+        if requested is None or char in requested:
+            groups.setdefault(char, []).append(index)
+    if requested is not None and requested - set(groups):
+        raise ValueError(f'이 분할에 없거나 식별할 수 없는 글자: {sorted(requested - set(groups))}')
+    rng = random.Random(seed)
+    keys = list(groups)
+    rng.shuffle(keys)
+    for group in groups.values():
+        rng.shuffle(group)
+    result = []
+    while keys and len(result) < count:
+        for char in keys[:]:
+            result.append(groups[char].pop())
+            if not groups[char]:
+                keys.remove(char)
+            if len(result) == count:
+                break
+    return result
+
+
+def preview_varied(manifest, checkpoint, split='val', count=5, characters=None, seed=42, save_dir=None):
+    rows = [row for row in read_manifest(manifest) if row['split'] == split]
+    inventory = {}
+    for row in rows:
+        char = preview_character(row)
+        inventory[char or '(글자 정보 없음)'] = inventory.get(char or '(글자 정보 없음)', 0) + 1
+    print(f'{split} 글자별 샘플 수 (CSV 또는 파일명 기준):', inventory)
+    if len(inventory) == 1:
+        print('한 종류만 식별됩니다. 실제 데이터에 다른 글자가 없다면 시각화로 추가할 수 없습니다.')
+    selected = select_preview_indices(rows, count, characters, seed)
+    print('시각화 인덱스:', selected, '글자:', [preview_character(rows[i]) for i in selected])
+    preview_reference(manifest, checkpoint, split=split, sample_indices=selected, save_dir=save_dir,
+                      context_title='Diverse characters / filename fallback')
 
 
 def run_test(checkpoint, csv_path, preview_count=5):
@@ -70,7 +124,7 @@ def run_manifest(checkpoint, manifest, split='val', preview_count=5, csv_path=No
     gc.collect()
     if device.type == 'cuda':
         torch.cuda.empty_cache()
-    preview_reference(manifest, checkpoint, count=preview_count, split=split, save_dir=destination)
+    preview_varied(manifest, checkpoint, count=preview_count, split=split, save_dir=destination)
     print('평가 결과 저장:', destination)
     return metrics
 

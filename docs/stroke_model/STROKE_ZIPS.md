@@ -8,6 +8,9 @@ checkpoint에 경로를 지정하면 특정 실행을 평가한다. 학습 당�
 기존 evaluate/preview_reference를 그대로 사용하여 val Dice, 정답 커버리지, exclusive 예측, 획별 확률/soft mask/entropy를 저장한다.
 결과는 checkpoint 옆 val_results_시간에 저장한다. 이는 모델 선택에 사용한 validation이며 독립 test 평가가 아니다.
 MODE="test_csv"는 기존 별도 test CSV 전체 평가를 유지한다.
+미리보기는 CSV char_id 또는 파일명의 단독 한글 음절로 묶어서 글자별로 골고루 선택한다.
+글자 정보가 없으면 무작위 샘플을 보여주며 글자별 샘플 수도 출력한다. 실제 val에 없는 글자는 표시할 수 없다.
+마지막 선택 셀의 PREVIEW_COUNT/CHARACTERS/PREVIEW_SEED를 바꾸면 전체 평가 없이 시각화만 다시 한다.
 
 [Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_stroke_zips.ipynb)하고 GPU 런타임에서 위부터 실행한다.
 첫 셀은 GitHub main 최신 코드를 clone하고 전체 커밋 SHA를 출력한다. 실행 커밋을 결과 폴더의 git_commit.txt에도 저장한다.

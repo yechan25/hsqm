@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 import torch
-from stroke_model.test_reference import run_test, run_manifest, run_zip_validation
+from stroke_model.test_reference import run_test, run_manifest, run_zip_validation, select_preview_indices
 
 
 class OneStrokeModel(torch.nn.Module):
@@ -14,6 +14,20 @@ class OneStrokeModel(torch.nn.Module):
 
 
 class TestEvaluationTests(unittest.TestCase):
+    def test_preview_diversity_and_character_filter(self):
+        rows = [{'char_id': '가'} for _ in range(20)] + [{'char_id': '나'}, {'source_image': '/input/다_001.png'}]
+        selected = select_preview_indices(rows, count=3)
+        self.assertEqual(len(selected), 3)
+        self.assertTrue(20 in selected and 21 in selected)
+        self.assertEqual(select_preview_indices(rows, count=10, characters=['나']), [20])
+        self.assertEqual(selected, select_preview_indices(rows, count=3))
+        with self.assertRaises(ValueError):
+            select_preview_indices(rows, characters=['한'])
+        unknown = [{'source_image': f'{i}.png'} for i in range(100)]
+        chosen = select_preview_indices(unknown, count=5)
+        self.assertEqual(len(set(chosen)), 5)
+        self.assertNotEqual(chosen, list(range(5)))
+
     def test_validation_filters_training_rows_and_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
