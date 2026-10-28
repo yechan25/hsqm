@@ -17,6 +17,7 @@
 ## 획 분리 모델
 
 - 획 이미지 ZIP 학습: [Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_stroke_zips.ipynb) — GitHub의 최신 V2 코드로 Drive의 4개 ZIP을 로컬에 풀고 CSV를 자동 검색하여 학습.
+- ZIP 학습 검증: [기존 V2 평가 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_reference_v2.ipynb) — 최신 ZIP 학습 모델을 자동 선택하고 같은 val 분할과 기존 soft mask 시각화를 재사용.
 - 굵은 자모 마스크 학습: [Jamo Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/jamo.ipynb) — [데이터 준비와 실행](docs/stroke_model/JAMO.md)
 - 자모 일반화 평가: [Jamo test Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_jamo.ipynb) — 새로운 변형·강한 변형·미관측 폰트 평가
 - 최신 구현: **기준 획 조건부 V2 (`ReferenceStrokeModel`)** — [구조와 데이터 설계](docs/stroke_model/REFERENCE_V2.md)

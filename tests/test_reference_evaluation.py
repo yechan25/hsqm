@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 import torch
-from stroke_model.test_reference import run_test
+from stroke_model.test_reference import run_test, run_manifest, run_zip_validation
 
 
 class OneStrokeModel(torch.nn.Module):
@@ -14,6 +14,52 @@ class OneStrokeModel(torch.nn.Module):
 
 
 class TestEvaluationTests(unittest.TestCase):
+    def test_validation_filters_training_rows_and_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / 'best.pt'
+            torch.save({'model': {}, 'image_size': 16, 'width': 8, 'epoch': 2}, checkpoint)
+            np.savez(root / 'val.npz', image=np.ones((1,16,16), np.float32),
+                     reference=np.ones((1,16,16), np.float32), strokes=np.ones((1,16,16), np.float32),
+                     labels=np.zeros((16,16), np.int64))
+            manifest = root / 'manifest.json'
+            manifest.write_text(json.dumps([
+                {'path': 'missing_train.npz', 'split': 'train', 'group_id': 'train'},
+                {'path': 'val.npz', 'split': 'val', 'group_id': 'val'}]))
+            (root / 'conversion_report.json').write_text(json.dumps({'rows': [
+                {'foreground_pixels': 9999, 'overlap_pixels': 9999, 'missing_pixels': 0},
+                {'foreground_pixels': 256, 'overlap_pixels': 0, 'missing_pixels': 0}]}))
+            with patch('stroke_model.test_reference.ReferenceStrokeModel', side_effect=lambda **kw: OneStrokeModel()), \
+                 patch('stroke_model.test_reference.preview_reference') as preview:
+                metrics = run_manifest(checkpoint, manifest)
+            self.assertEqual(metrics['val_samples'], 1)
+            self.assertEqual(metrics['val_macro_dice_annotated'], 1.)
+            self.assertEqual(metrics['annotation_coverage'], 1.)
+            self.assertEqual(preview.call_args.kwargs['split'], 'val')
+
+    def test_zip_validation_uses_saved_csv_and_seed_and_rejects_changed_archives(self):
+        from stroke_model.prepare_stroke_zips import ARCHIVES
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / 'best.pt'
+            checkpoint.touch()
+            (root / 'run_config.json').write_text(json.dumps({'seed': 17, 'image_size': 16}))
+            saved = []
+            for name in ARCHIVES:
+                p = root / name
+                p.write_bytes(b'archive')
+                saved.append([str(p), p.stat().st_size, p.stat().st_mtime_ns])
+            (root / 'complete.json').write_text(json.dumps({'archives': saved}))
+            with patch('stroke_model.prepare_stroke_zips.prepare_stroke_zips', return_value=root / 'manifest.json') as prepare, \
+                 patch('stroke_model.test_reference.run_manifest', return_value={'ok': True}) as evaluate:
+                self.assertEqual(run_zip_validation(checkpoint, root), {'ok': True})
+                self.assertEqual(prepare.call_args.kwargs['csv_path'], root / 'selected_paths.csv')
+                self.assertEqual(prepare.call_args.kwargs['seed'], 17)
+                self.assertEqual(evaluate.call_args.kwargs['split'], 'val')
+                (root / ARCHIVES[0]).write_bytes(b'changed archive')
+                with self.assertRaises(ValueError):
+                    run_zip_validation(checkpoint, root)
+
     def test_evaluation_uses_all_test_rows_and_reuses_conversion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

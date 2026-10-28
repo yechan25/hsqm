@@ -90,16 +90,30 @@ preview_reference(manifest, checkpoint=output / "best.pt", count=5)
     path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1), encoding='utf-8')
     setup_cell = cells[1]
     cells = []
-    markdown('# V2 test 데이터 평가\n학습하지 않습니다. 저장된 best.pt로 test_dataset 전체를 평가합니다. '
-             '첫 실행은 test 이미지를 변환하고 이후에는 재사용합니다. GPU를 선택하고 두 셀을 실행하세요. '
-             'exclusive 결과와 함께 획별 확률·soft mask·불확실성 지도를 표시하고 저장합니다.\n')
+    markdown('# V2 검증 / test 평가\n기존 평가·획별 확률·soft mask·불확실성 시각화를 재사용합니다. '
+             '기본 zip_val은 ZIP 학습 때 저장한 CSV/seed로 val 분할을 복원합니다. 독립 test 점수가 아닙니다. '
+             '최신 ZIP 학습 실행의 best.pt를 자동 선택하며 checkpoint로 직접 지정할 수도 있습니다. '
+             '별도 test_dataset 전체 평가는 MODE="test_csv"로 선택하세요. GPU에서 두 셀을 실행합니다.\n')
     cells.append(setup_cell)
     code('''from google.colab import drive
 drive.mount("/content/drive")
-from stroke_model.test_reference import run_test
-checkpoint = "/content/drive/Shareddrives/2026 자율연구/HSQM/reference_v2_data/20260919_114512_509544/reference_v2_run_20260919_124839/best.pt"
+from stroke_model.test_reference import run_test, run_zip_validation
+MODE = "zip_val"  # "test_csv": 기존 별도 test CSV 전체 평가
+hsqm = Path("/content/drive/Shareddrives/2026 자율연구/HSQM")
+checkpoint = None  # 특정 best.pt를 평가하려면 전체 경로 지정
+if checkpoint is None:
+    candidates = sorted((hsqm / "stroke_zip_runs").glob("*/best.pt"))
+    if not candidates:
+        raise FileNotFoundError("ZIP 학습 best.pt가 없습니다. 학습 완료 후 실행하거나 checkpoint를 지정하세요.")
+    checkpoint = candidates[-1]
+print("평가 checkpoint:", checkpoint)
 test_csv = "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/test_dataset/paths.csv"
-metrics = run_test(checkpoint, test_csv, preview_count=5)
+if MODE == "zip_val":
+    metrics = run_zip_validation(checkpoint, hsqm / "dataset/automated_train_dataset", preview_count=5)
+elif MODE == "test_csv":
+    metrics = run_test(checkpoint, test_csv, preview_count=5)
+else:
+    raise ValueError("MODE는 zip_val 또는 test_csv여야 합니다")
 ''')
     test_notebook = {**notebook, 'cells': cells, 'metadata': {**notebook['metadata'], 'colab': {'name': 'test_reference_v2.ipynb'}}}
     (ROOT / 'notebooks/test_reference_v2.ipynb').write_text(json.dumps(test_notebook, ensure_ascii=False, indent=1), encoding='utf-8')
@@ -140,6 +154,7 @@ results = show_bifpn_baseline(session, sample_index=sample_index, mode=mode)
              'stroke_model/convert_reference_csv.py', 'stroke_model/preview_reference.py',
              'stroke_model/reference_cache.py',
              'stroke_model/local_reference_data.py',
+             'stroke_model/prepare_stroke_zips.py',
              'stroke_model/test_reference.py',
              'stroke_model/diagnose_reference.py',
              'tests/test_reference_model.py', 'tests/test_reference_data.py']
