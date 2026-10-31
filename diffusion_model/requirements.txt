@@ -1,0 +1,12 @@
+# Keep Colab's CUDA-enabled torch/torchvision installation.
+diffusers==0.35.2
+huggingface-hub==0.36.0
+safetensors>=0.4
+numpy
+pillow
+fonttools
+tqdm
+timm>=1.0,<1.1
+pyyaml
+pandas
+# Optional OCR experiment: pip install easyocr==1.7.2

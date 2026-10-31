@@ -8,11 +8,19 @@
 |---|---|
 | [stroke_model/](stroke_model/) | 획 분리 모델, 학습·추론·후처리 및 관련 데이터 처리 코드 |
 | [font_test/](font_test/) | 폰트 관련 실험 코드와 설정을 위한 공간 |
+| [diffusion_model/](diffusion_model/) | 한글 글자 조건부 확산 학습·생성 코드 |
 | [configs/](configs/) | 모델 학습 설정 |
 | [notebooks/](notebooks/) | Colab 실행 및 결과 확인 노트북 |
 | [tests/](tests/) | 코드 검증 및 배포 묶음 생성 도구 |
 | [docs/stroke_model/](docs/stroke_model/) | 획 분리 모델 설명 및 실행 안내 |
 | [diagnostics/](diagnostics/) | 버전 관리하는 소규모 진단 예시 |
+
+## 한글 글자 확산 모델 학습 (A100)
+
+- [실행·데이터·한계 설명](docs/diffusion_model/README.md)
+- [Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_diffusion_a100.ipynb): GitHub main에서 최신 코드를 받아 128×128 한 글자 조건부 DDPM 학습. OCR/기준 획 재구성 보조 손실과 checkpoint 재개 지원. ZIP 업로드 불필요.
+- 노트북 재생성: `python tests/build_diffusion_bundle.py`. 선택적 백업 ZIP은 `outputs/diffusion_bundle/hsqm_diffusion_a100.zip`에 저장.
+- 이 버전은 소형 문자 이미지 학습 프로세스다. AnyText 미세조정·역확산 guidance·검증된 획 오류 점수는 아직 포함하지 않는다.
 
 ## 획 분리 모델
 
