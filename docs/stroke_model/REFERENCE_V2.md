@@ -196,3 +196,12 @@ test 평가는 `notebooks/test_reference_v2.ipynb`의 2개 셀로 실행한다. 
 - CPU에서 원래 순차 방식 대비 출력, 입력/파라미터 기울기 일치 및 BF16 유한 기울기를 검증했다. A100 실측 속도/메모리는 Colab 실행 후 확인해야 한다.
 - epoch마다 samples_per_second, train_seconds, data_wait_seconds, epoch_seconds를 기록한다. 진행률은 5초 간격으로 갱신해 로그가 과도하게 쌓이지 않게 했다.
 - 로컬 복사는 최초 1회 시간이 걸린다. 복사 시간은 epoch 학습 시간과 구분해서 봐야 한다. CUDA OOM 발생 시 노트북 batch_size를 4로 낮춘다.
+
+
+## Inference without input stroke annotations
+
+Use `notebooks/infer_reference_v2.ipynb` for prediction only. To reuse an already initialized Colab runtime, paste the complete contents of `notebooks/infer_reference_v2_cell.py` into a new cell after setup/Drive mounting. The cell embeds the inference helper, so it also works with an older clone that already has the V2 model and preview modules.
+
+Required CSV fields: `input_path`, `target_path`, `target_stroke_paths` (the existing aliases are also supported). `input_stroke_paths` and `total_paths` are ignored; no label conversion, training, augmentation, or Dice evaluation runs. `INPUT_FILES` selects input filenames from the CSV (default: `I_아_2.png`, `I_야_2.png`); `None` processes the full CSV. Duplicate basenames require an exact CSV path. The Python API also supports one-based `sample_rows`, excluding the header, as an alternative. Set `DATASET_ROOT` if image files are outside the CSV tree.
+
+Uses the existing V2 checkpoint and preprocessing. Saves raw probabilities, soft masks, exclusive assignment labels (background=-1), previews, and inference.json in a new checkpoint-adjacent inference folder. Soft previews retain fixed 0..1 scale. This permits absent input strokes but does not add or validate a missing/extra-stroke detector: softmax assigns each input pixel among reference strokes, and a spurious stroke assignment remains possible. Input annotations are neither required nor displayed; use the existing evaluation workflow only when valid annotation metrics are needed.
