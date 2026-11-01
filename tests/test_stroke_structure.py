@@ -14,6 +14,8 @@ from skimage.draw import circle_perimeter
 
 from stroke_model.stroke_structure import StructureConfig, StrokeStructureLoss, reconstruct
 from stroke_model.score_stroke_structure import score_saved_strokes, score_structure_csv
+from stroke_model.junction_diagnostics import diagnose_junction
+from stroke_model.stroke_structure import soft_occupancy
 
 
 def line_cases(size=64):
@@ -76,6 +78,9 @@ class StructureTests(unittest.TestCase):
         self.assertLess(before['per_stroke']['split'].item(), 1e-5)
         self.assertGreater(after['per_stroke']['split'].item(), .01)
         self.assertLess(before['per_stroke']['junction'].item(), .02)
+        hard = diagnose_junction(normal[0].numpy(), loss.strokes[0].seeds[0, 0].numpy(),
+                                 loss.config.junction_thresholds)
+        self.assertEqual(hard['branch_regions_max'], 0)
 
     def test_coverage_allows_small_translation(self):
         shifted = torch.roll(self.cases['normal'], 1, dims=1)
@@ -119,6 +124,66 @@ class StructureTests(unittest.TestCase):
         short = self.cases['normal'].clone()
         short[:, 27:30, 30:33] = 1
         self.assertGreater(self.loss(short)['per_stroke']['junction'].item(), 0)
+
+    def test_weak_t_branch_is_not_rounded_down_to_two_arms(self):
+        scores = []
+        for strength in (1., .8, .6, .4):
+            mask = self.cases['branch'] * strength
+            result = self.loss(mask)
+            scores.append(result['per_stroke']['junction'].item())
+            hard = diagnose_junction(mask[0].numpy(), self.loss.strokes[0].seeds[0, 0].numpy(),
+                                     self.loss.config.junction_thresholds)
+            self.assertGreater(hard['branch_regions_max'], 0)
+            self.assertGreater(scores[-1], .005)
+        # A clear .6 T retains a shape response comparable to the unit-strength T.
+        self.assertGreater(scores[2], scores[0] * .8)
+
+    def test_weak_side_branch_on_strong_trunk(self):
+        for strength in (.25, .4, .6):
+            mask = self.cases['normal'].clone()
+            mask[0, 15:30, 30:35] = strength
+            result = self.loss(mask)
+            hard = diagnose_junction(mask[0].numpy(), self.loss.strokes[0].seeds[0, 0].numpy(),
+                                     self.loss.config.junction_thresholds)
+            self.assertGreater(hard['branch_regions_max'], 0)
+            self.assertGreater(result['per_stroke']['junction'].item(), 1e-4)
+
+    def test_blurred_and_short_weak_branches(self):
+        from scipy.ndimage import gaussian_filter
+        seed = self.loss.strokes[0].seeds[0, 0].numpy()
+        cases = []
+        short = self.cases['normal'].clone()
+        short[0, 27:30, 30:33] = .4
+        cases.append(short)
+        blurred = torch.tensor(gaussian_filter(self.cases['branch'][0].numpy(), .7))[None] * .6
+        cases.append(blurred)
+        for mask in cases:
+            result = self.loss(mask)
+            hard = diagnose_junction(mask[0].numpy(), seed, self.loss.config.junction_thresholds)
+            self.assertGreater(result['per_stroke']['junction'].item(), 1e-5)
+            self.assertGreater(hard['branch_regions_max'], 0)
+
+    def test_hard_check_ignores_detached_noise_and_normal_shapes(self):
+        seed = self.loss.strokes[0].seeds[0, 0].numpy()
+        for name in ('normal', 'noise', 'missing', 'gap'):
+            result = diagnose_junction(self.cases[name][0].numpy(), seed, self.loss.config.junction_thresholds)
+            self.assertEqual(result['branch_regions_max'], 0, name)
+
+    def test_absolute_occupancy_does_not_amplify_missing_strokes(self):
+        ink = torch.tensor([0., .01, .1, .6, 1.], requires_grad=True)
+        occupancy = soft_occupancy(ink, .15, .025)
+        self.assertEqual(occupancy[0].item(), 0)
+        self.assertEqual(occupancy[-1].item(), 1)
+        self.assertLess(occupancy[1].item(), .01)
+        occupancy.sum().backward()
+        self.assertTrue(torch.isfinite(ink.grad).all())
+
+    def test_multilevel_config_rejects_unordered_or_invalid_levels(self):
+        for kwargs in ({'junction_thresholds': ()}, {'junction_thresholds': (.4, .2)},
+                       {'junction_thresholds': (.2, .2)}, {'junction_thresholds': (0.,)},
+                       {'junction_temperature': 0}):
+            with self.assertRaises(ValueError):
+                StructureConfig(**kwargs)
 
     def test_split_directional_finite_difference(self):
         mask = self.cases['normal'].clone() * .85
@@ -192,6 +257,7 @@ class StructureTests(unittest.TestCase):
             for name in ('csv', 'npz'):
                 self.assertTrue(Path(saved['results'][0][name]).is_file())
             self.assertTrue(Path(saved['results'][0]['figures'][0]).is_file())
+            self.assertIn('junction_checks', saved['results'][0])
 
     def test_csv_filename_integration_ignores_annotations(self):
         class FakeModel(torch.nn.Module):

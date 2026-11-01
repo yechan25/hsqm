@@ -31,6 +31,7 @@ MODE="saved_npz"에서는 NPZ_FILES에 기존 추론 NPZ를 넣거나 같은 런
 | skeleton_iterations | soft skeleton 계산 깊이. 획 반경보다 충분히 크게 설정 |
 | junction_radii | 기본 (1,2,3). 작은 접합부 분기도 검사 |
 | junction_margin | 기본 0. 짧은 정션을 폰트 특성으로 면제하지 않음 |
+| junction_thresholds / junction_temperature | 공통 절대 잉크 수준 / 학습용 occupancy 전이 폭. 기본 (0.15,0.30,0.45,0.60,0.75)와 0.025 |
 | junction_seed_radius | 기준 주변 본체에서 연결 탐색을 시작하는 영역 |
 | expected_width / width_radius / width_tolerance | 파임 참고값의 정상 굵기 / 검사 반경 / 허용 비율 |
 | split_weight / junction_weight | extraction_error의 D/J 가중치 |
@@ -42,7 +43,7 @@ width_weight는 정상 굵기 교정 전에는 0이다. 예측 획을 최댓값�
 
 - M: 기준 중심선 각 위치 주변의 잉크 강도가 required_ink보다 부족한 비율의 제곱 평균.
 - D: 기준 경로의 두 검사 영역 사이에서 실제 잉크를 따라 연결되는 강도의 부족. 양쪽 잉크가 존재하는 경우에 가중한다. 고리는 지역 통로로 검사하여 반대편 우회를 제한한다.
-- J: soft skeleton 주변 고리의 선/배경 전환으로 분기 가닥 수를 근사한다. 2가닥 초과 반응에 skeleton 강도와 본체 연결 정도를 곱하고 기준 길이로 나눈다. 분기 반응이지 정확한 가지 길이 지표는 아니다.
+- J: 여러 절대 잉크 수준에서 부드러운 occupancy를 만든 뒤 soft skeleton 주변 고리의 전환으로 가닥 수를 근사한다. 수준별 2가닥 초과 반응에 해당 수준의 skeleton과 본체 연결 정도를 곱한다. 위치별 최대 반응을 합쳐 기준 길이로 나눈다. 원래 잉크 강도를 곧바로 가닥 수로 세지 않는다.
 - W: 정상 기대 굵기의 기준 영역과 국소 평균 잉크량의 부족을 비교한다. 정확한 법선 단면 대신 정사각형 영역을 사용하는 보조 근사값이다.
 
 D의 연결 전파:
@@ -63,6 +64,10 @@ pair_error = u*v * relu((min(u,v)-c) / max(min(u,v), eps))**2
 **혼합 total은 제거했다.** extraction_error는 가중 D+J이고 reference_deficit은 가중 M+W다. `loss`는 전자 평균, `reference_loss`는 후자 평균이다. 어느 값도 오류 원인이 원본인지 추출기인지 판정하지 않는다. 실제 입력에서 누락된 획의 빈 출력은 올바른 추출일 수 있다. 보고서에는 source_quality.assessed=False를 명시한다.
 
 CSV 표, 오류 위치 PNG, 원본과 진단 맵 NPZ, 설정을 포함한 structure_report.json을 저장한다. 도달 불가 그림은 D의 정확한 픽셀별 분해가 아닌 진단 지도다. 구조 결과가 원본 글자의 점수로 자동 합산되지 않는다.
+
+기본 화면은 원본 soft mask / 이산 skeleton과 빨간 분기 원 / 학습용 soft 반응의 3줄이다. branch_regions_max는 각 절대 수준의 이산 분기 영역 수 최댓값이고 levels_with_branches는 분기를 발견한 수준 수다. 이산 검사는 학습에 사용하지 않으며 진단과 soft 근사의 일치가 보장되지는 않는다. J_soft는 과학적 표기로 출력하고, 그림에는 peak값과 페이지 공유 색 범위를 표시한다. 전체 M/D/J 화면은 SHOW_DETAILS=True로 표시할 수 있으며 False여도 파일로 저장한다.
+
+기존 저장 결과로 다시 검사하려면 MODE="saved_npz"와 NPZ_FILES를 설정한다. 모델 추론을 반복하지 않는다. 저장된 reference_geometry가 있으면 이를 보존해 비교 좌표가 달라지지 않도록 한다. 실제 실패 예제 재현에는 스크린샷보다 row_0043_structure.npz 같은 배열 파일이 필요하다.
 
 ## 추출기 추가 학습 API
 
@@ -109,7 +114,7 @@ soft skeleton 자체의 가짜 분기, 굵기·곡률 변화, 본체에 닿은 �
 
 `python -m unittest discover -s tests -p "test_*structure*.py" -v`
 
-합성 누락·분리·짧은 정션·외딴 잡음·고리 절단, 기울기, 파일 입출력, teacher의 기울기 차단, 채널 삭제 방지, 실제 손상 입력의 구조 항 제외를 검사한다. 실제 체크포인트 대신 mock을 쓰는 통합 검사가 포함되며 학습 효과를 증명하지는 않는다.
+25개 검사에서 합성 누락·분리·짧은 정션·외딴 잡음·고리 절단, 약한 T자·강한 본체의 약한 가지·흐린 경계, 기울기, 파일 입출력, teacher 기울기 차단, 채널 삭제 방지, 실제 손상 입력의 구조 항 제외를 확인한다. 실제 체크포인트 대신 mock을 쓰는 통합 검사가 포함되며 학습 효과를 증명하지는 않는다. `python tests/demo_junction_levels.py`로 새 3줄 그림을 재현할 수 있다.
 
 - [clDice, CVPR 2021](https://openaccess.thecvf.com/content/CVPR2021/html/Shit_clDice_-_A_Novel_Topology-Preserving_Loss_Function_for_Tubular_Structure_Segmentation.html), [저자 구현](https://github.com/jocpae/clDice): soft skeleton 기반.
 - [Clough et al.](https://arxiv.org/abs/1910.01877): 위상 비교 기준. Persistent homology 자체는 현재 모듈에 구현하지 않았다.

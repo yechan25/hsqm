@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 
 from stroke_model.stroke_structure import StructureConfig, StrokeStructureLoss
+from stroke_model.junction_diagnostics import diagnose_junction
 
 
 def _destination(save_dir):
@@ -18,14 +19,20 @@ def _destination(save_dir):
 
 
 def _measure(masks, geometry, config, prefix, reference=None, image=None,
-             show=True, caption=''):
+             show=True, caption='', show_details=False):
     evaluator = StrokeStructureLoss(geometry, config).to(masks.device)
     with torch.no_grad():
         result = evaluator(masks, return_maps=True)
-    rows = []
+    rows, diagnostics = [], []
     for k in range(len(geometry)):
+        diagnostic = diagnose_junction(masks[k].detach().float().cpu().numpy(),
+            evaluator.strokes[k].seeds[0, 0].cpu().numpy(), config.junction_thresholds)
+        diagnostics.append(diagnostic)
         rows.append({'stroke': k + 1,
                      **{key: float(value[0, k]) for key, value in result['per_stroke'].items()},
+                     'branch_regions_max': diagnostic['branch_regions_max'],
+                     'levels_with_branches': diagnostic['levels_with_branches'],
+                     'junction_peak_response': float(result['maps'][k]['junction'].max()),
                      'closed_reference': result['convergence'][k]['closed'],
                      'connectivity_converged': result['convergence'][k]['pairs'],
                      'attachment_converged': result['convergence'][k]['attachment']})
@@ -39,16 +46,71 @@ def _measure(masks, geometry, config, prefix, reference=None, image=None,
         payload['image'] = torch.as_tensor(image).detach().cpu().numpy()
     for name in ('centerline', 'missing', 'split', 'junction', 'attached'):
         payload[name + '_maps'] = np.stack([m[name][0, 0].cpu().numpy() for m in result['maps']])
+    payload['junction_thresholds'] = np.asarray(config.junction_thresholds)
+    payload['junction_level_scores'] = np.stack([m['junction_level_scores'][:, 0].cpu().numpy() for m in result['maps']])
+    payload['junction_hard_skeletons'] = np.stack([d['skeleton'] for d in diagnostics])
+    payload['junction_hard_branches'] = np.stack([d['branches'] for d in diagnostics])
     np.savez_compressed(str(prefix) + '_structure.npz', **payload)
-    figures = _plot(result['maps'], rows, prefix, caption, show)
+    figures = _plot_junctions(result['maps'], rows, diagnostics, prefix, caption, show)
+    figures += _plot(result['maps'], rows, prefix, caption, show and show_details)
     print(caption)
-    print(frame.round(5).to_string(index=False))
+    columns = ['stroke', 'branch_regions_max', 'levels_with_branches', 'junction', 'split', 'missing']
+    print(frame[columns].rename(columns={'junction': 'J_soft'}).to_string(index=False,
+        formatters={key: lambda x: f'{x:.3g}' for key in ('J_soft', 'split', 'missing')}))
+    print('branch_regions_max > 0: inspect red circles. J_soft is the differentiable surrogate, not a branch count.')
     if not frame['connectivity_converged'].all() or not frame['attachment_converged'].all():
         print('Iteration cap reached: increase connectivity_steps/attachment_steps before interpreting these errors.')
     return {'strokes': rows, 'mean_errors': {key: float(value.mean()) for key, value in result['per_stroke'].items()},
             'worst_extraction_error': float(result['per_stroke']['extraction_error'].max()),
             'source_quality': result['source_quality'],
+            'junction_checks': [{key: value for key, value in d.items()
+                                 if key not in ('skeleton', 'branches')} for d in diagnostics],
             'csv': str(prefix) + '_errors.csv', 'npz': str(prefix) + '_structure.npz', 'figures': figures}
+
+
+def _plot_junctions(maps, rows, diagnostics, prefix, caption, show):
+    """Three rows: original mask / independently thinned graph / soft response."""
+    import matplotlib.pyplot as plt
+    import unicodedata
+    paths = []
+    for offset in range(0, len(maps), 4):
+        page = maps[offset:offset+4]
+        fig, axes = plt.subplots(3, len(page), squeeze=False, figsize=(3.8*len(page), 10), layout='constrained')
+        page_max = max(float(item['junction'].max()) for item in page)
+        display_max = max(page_max, 1e-8)
+        for col, item in enumerate(page):
+            k = offset + col
+            diagnostic, values = diagnostics[k], rows[k]
+            ink = item['mask'][0, 0].cpu().numpy()
+            axes[0, col].imshow(ink, cmap='gray_r', vmin=0, vmax=1)
+            axes[0, col].set_title(f'Stroke {k+1}: original soft mask')
+            axes[1, col].imshow(ink, cmap='gray_r', vmin=0, vmax=1, alpha=.2)
+            axes[1, col].imshow(np.ma.masked_where(~diagnostic['skeleton'], diagnostic['skeleton']),
+                                cmap='gray_r', vmin=0, vmax=1)
+            if diagnostic['centers']:
+                yy, xx = np.asarray(diagnostic['centers']).T
+                axes[1, col].scatter(xx, yy, s=100, facecolors='none', edgecolors='red', linewidths=1.8)
+            axes[1, col].set_title(f"Hard check: {diagnostic['branch_regions_max']} branch regions max\n"
+                f"shown threshold={diagnostic['selected_threshold']:.2f}; "
+                f"hits={diagnostic['levels_with_branches']}/{diagnostic['tested_levels']}", fontsize=10)
+            response = item['junction'][0, 0].cpu().numpy()
+            axes[2, col].imshow(ink, cmap='gray_r', vmin=0, vmax=1, alpha=.2)
+            artist = axes[2, col].imshow(np.ma.masked_less_equal(response, 0), cmap='magma', vmin=0, vmax=display_max)
+            fig.colorbar(artist, ax=axes[2, col], fraction=.045, pad=.02)
+            axes[2, col].set_title(f"Soft junction response: J={values['junction']:.3g}\n"
+                                  f"peak={values['junction_peak_response']:.3g}", fontsize=10)
+            for ax in axes[:, col]:
+                ax.axis('off')
+        # ASCII fallback avoids font warnings hiding the actual diagnostic output.
+        safe_caption = unicodedata.normalize('NFC', caption).encode('ascii', 'backslashreplace').decode('ascii')
+        fig.suptitle(safe_caption + '\nRed circles = discrete branch candidates. Soft heat uses a shared PAGE scale, not fixed 0..1.', fontsize=10)
+        path = str(prefix) + f'_junction_{offset//4+1}.png'
+        fig.savefig(path, dpi=140)
+        paths.append(path)
+        if show:
+            plt.show()
+        plt.close(fig)
+    return paths
 
 
 def _plot(maps, rows, prefix, caption, show):
@@ -90,11 +152,12 @@ def _plot(maps, rows, prefix, caption, show):
     return paths
 
 
-def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True):
+def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True, show_details=False):
     """Use saved run_inference_csv NPZ files: soft_masks + reference_strokes.
 
     Also accepts the inference report dictionary returned by run_inference_csv.
-    Uses unwarped reference geometry: input and reference must already be aligned.
+    Preserves reference_geometry if saved; otherwise uses reference_strokes.
+    Input and geometry must already be aligned.
     """
     config = config or StructureConfig()
     if isinstance(npz_paths, dict):
@@ -110,15 +173,16 @@ def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True):
         with np.load(path, allow_pickle=False) as data:
             masks = torch.tensor(data['soft_masks'], dtype=torch.float32)
             reference = torch.tensor(data['reference_strokes'], dtype=torch.float32)
+            geometry = torch.tensor(data['reference_geometry'], dtype=torch.float32) if 'reference_geometry' in data else reference
             image = data['image'].copy() if 'image' in data else None
         if masks.ndim == 4 and masks.shape[0] == 1:
             masks = masks[0]
         if masks.ndim != 3:
             raise ValueError(f'Expected K,H,W masks in {path}')
-        results.append({'input_npz': str(path), **_measure(masks, reference, config,
+        results.append({'input_npz': str(path), **_measure(masks, geometry, config,
             destination / f'sample_{i+1:04d}', reference=reference, image=image,
-            show=show, caption=Path(path).name)})
-    report = {'mode': 'saved_npz', 'geometry': 'reference', 'config': asdict(config),
+            show=show, caption=Path(path).name, show_details=show_details)})
+    report = {'mode': 'saved_npz', 'geometry': 'stored_if_available_else_reference', 'config': asdict(config),
               'source_quality': {'assessed': False}, 'results': results}
     (destination / 'structure_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Structure results:', destination)
@@ -127,7 +191,7 @@ def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True):
 
 def score_structure_csv(checkpoint, csv_path, input_files=None, sample_rows=None,
                         dataset_root=None, config=None, geometry='reference',
-                        save_dir=None, show=True):
+                        save_dir=None, show=True, show_details=False):
     """Predict selected PNGs then measure errors, ignoring target annotations.
 
     geometry='reference': fixed reference coordinates, requires alignment.
@@ -171,7 +235,7 @@ def score_structure_csv(checkpoint, csv_path, input_files=None, sample_rows=None
         prepared_geometry = strokes if geometry == 'reference' else output['hints'][0].detach().cpu()
         result = _measure(output['masks'][0], prepared_geometry, config,
             destination / f'row_{number:04d}', reference=strokes, image=image,
-            show=show, caption=f'CSV row {number}: {image_path.name}')
+            show=show, caption=f'CSV row {number}: {image_path.name}', show_details=show_details)
         results.append({'csv_row': number, 'input': str(image_path), **result})
     report = {'mode': 'csv', 'checkpoint': str(checkpoint), 'csv': str(csv_path),
               'geometry': geometry, 'config': asdict(config), 'uses_input_stroke_annotations': False,

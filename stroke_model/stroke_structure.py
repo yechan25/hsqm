@@ -30,6 +30,8 @@ class StructureConfig:
     skeleton_iterations: int = 12
     junction_radii: tuple = (1, 2, 3)
     junction_margin: float = 0.0  # No font/short-branch exemption by default
+    junction_thresholds: tuple = (0.15, 0.30, 0.45, 0.60, 0.75)
+    junction_temperature: float = 0.025  # Soft occupancy transition, absolute ink
     junction_seed_radius: int = 2
     attachment_steps: int | None = None  # None: H*W, with convergence check
     expected_width: float = 5.0  # Optional normal-width prior, NOT skeleton width
@@ -55,6 +57,12 @@ class StructureConfig:
             raise ValueError('pair_spans must contain positive integers')
         if not self.junction_radii or any(not isinstance(v, int) or v < 1 for v in self.junction_radii):
             raise ValueError('junction_radii must contain integers >= 1')
+        if (not self.junction_thresholds or any(not math.isfinite(float(v)) or not 0 < v < 1
+                                               for v in self.junction_thresholds)
+                or sorted(set(self.junction_thresholds)) != list(self.junction_thresholds)):
+            raise ValueError('junction_thresholds must be strictly increasing values in (0,1)')
+        if not math.isfinite(self.junction_temperature) or self.junction_temperature <= 0:
+            raise ValueError('junction_temperature must be finite and positive')
         for name in ('connectivity_steps', 'attachment_steps'):
             v = getattr(self, name)
             if v is not None and (not isinstance(v, int) or v < 1):
@@ -228,6 +236,38 @@ def _crossings(skeleton, radius):
     return sum((a - b).abs() for a, b in zip(samples, samples[1:] + samples[:1])) / 2
 
 
+def soft_occupancy(mask, threshold, temperature):
+    """Approximate absolute level-set occupancy, with exactly 0->0 and 1->1.
+
+    This is NOT per-stroke max normalization. An empty/faint missing stroke is
+    never amplified relative to its own maximum. Shape and absolute ink are
+    separated using shared, configurable thresholds.
+    """
+    tau = torch.as_tensor(threshold, device=mask.device, dtype=mask.dtype)
+    low = torch.sigmoid(-tau / temperature)
+    high = torch.sigmoid((1 - tau) / temperature)
+    return ((torch.sigmoid((mask - tau) / temperature) - low) / (high - low)).clamp(0, 1)
+
+
+def multilevel_junction(mask, seeds, config):
+    """Differentiate shape per absolute level BEFORE counting skeleton arms.
+
+    Levels are stacked on the batch axis. Return a strongest-level response map
+    and level diagnostics. A branch with ink .6 is not counted as 3*.6 arms.
+    """
+    b, _, h, w = mask.shape
+    levels = len(config.junction_thresholds)
+    tau = mask.new_tensor(config.junction_thresholds)[:, None, None, None, None]
+    occupancy = soft_occupancy(mask[None], tau, config.junction_temperature).reshape(levels*b, 1, h, w)
+    skeleton = soft_skeleton(occupancy, config.skeleton_iterations)
+    attached, converged = reconstruct(occupancy, occupancy * seeds, config.attachment_steps)
+    responses = [F.relu(_crossings(skeleton, r) - 2 - config.junction_margin).square()
+                 for r in config.junction_radii]
+    maps = (torch.stack(responses).mean(0) * skeleton * attached).reshape(levels, b, 1, h, w)
+    peak = maps.amax(0)
+    return peak, maps, converged
+
+
 class StrokeStructureLoss(nn.Module):
     """Prepare once on fixed aligned reference strokes, then call on live masks.
 
@@ -292,16 +332,13 @@ class StrokeStructureLoss(nn.Module):
                 if return_maps:
                     split_maps.append((pair, F.relu(f - reached)))
             split = torch.stack(split_values, -1).mean(-1)
-            skeleton = soft_skeleton(m, cfg.skeleton_iterations)
             attached, attach_converged = reconstruct(m, m * stroke.seeds, cfg.attachment_steps)
-            responses = [F.relu(_crossings(skeleton, r) - 2 - cfg.junction_margin).square()
-                         for r in cfg.junction_radii]
-            junction_map = torch.stack(responses).mean(0) * skeleton * attached
+            junction_map, junction_levels, junction_converged = multilevel_junction(m, stroke.seeds, cfg)
             junction = junction_map.flatten(1).sum(-1) / stroke.length
             for name, value in [('missing', missing), ('split', split), ('junction', junction), ('width', width)]:
                 metrics[name].append(value)
             convergence.append({'stroke': k + 1, 'pairs': all(pair_converged),
-                                'attachment': attach_converged, 'closed': stroke.closed})
+                                'attachment': attach_converged and junction_converged, 'closed': stroke.closed})
             if return_maps:
                 missing_map = torch.zeros_like(m)
                 missing_map[:, 0, stroke.ys, stroke.xs] = deficits
@@ -313,7 +350,8 @@ class StrokeStructureLoss(nn.Module):
                         target.copy_(torch.maximum(target, area.detach()))
                 all_maps.append({'mask': m.detach(), 'centerline': stroke.skeleton.detach(),
                                  'missing': missing_map.detach(), 'split': split_map.detach(),
-                                 'junction': junction_map.detach(), 'attached': attached.detach()})
+                                 'junction': junction_map.detach(), 'attached': attached.detach(),
+                                 'junction_level_scores': (junction_levels.flatten(2).sum(-1) / stroke.length).detach()})
         per_stroke = {key: torch.stack(value, -1) for key, value in metrics.items()}
         extraction = cfg.split_weight * per_stroke['split'] + cfg.junction_weight * per_stroke['junction']
         reference = cfg.missing_weight * per_stroke['missing'] + cfg.width_weight * per_stroke['width']

@@ -21,6 +21,7 @@ DATASET_ROOT = None  # CSV 폴더 밖에 이미지가 있으면 데이터의 상
 NPZ_FILES = []  # saved_npz 모드: ["/content/drive/.../row_0001.npz"]
 SAVE_DIR = None  # None = 시간별 새 폴더. 직접 지정할 때는 아직 없는 폴더
 SHOW_PLOTS = True
+SHOW_DETAILS = False  # 기본은 정션 3줄 그림만 표시. 전체 M/D/J 그림은 파일로 저장
 
 # reference: 원래 기준 좌표. 입력과 기준이 정렬돼 있어야 함.
 # hints: 모델이 변형한 기준 좌표. 정렬 오류를 숨길 수 있으므로 비교용으로 사용.
@@ -40,6 +41,8 @@ STRUCTURE_CONFIG = dict(
     skeleton_iterations=12,   # soft skeleton 반복 횟수. 두꺼운 획이면 늘릴 것
     junction_radii=(1, 2, 3), # 작은 접합부 분기까지 검사
     junction_margin=0.0,      # 기본값: 폰트/짧은 가지에 대한 정션 면제 없음
+    junction_thresholds=(0.15, 0.30, 0.45, 0.60, 0.75), # 절대 잉크 기준을 여러 개 검사
+    junction_temperature=0.025, # 학습용 부드러운 이진화 전이 폭
     junction_seed_radius=2,   # 기준 주변 본체에서만 연결된 가지를 탐색
     attachment_steps=None,    # None = 수렴까지. 제한 시 수렴 여부가 표에 표시됨
     expected_width=5.0,       # 정상 획의 기대 굵기. 기준 skeleton 굵기가 아님
@@ -88,7 +91,7 @@ if MODE == "csv":
     structure_results = score_structure_csv(
         CHECKPOINT, CSV_PATH, input_files=INPUT_FILES, dataset_root=DATASET_ROOT,
         config=structure_config, geometry=REFERENCE_GEOMETRY,
-        save_dir=SAVE_DIR, show=SHOW_PLOTS,
+        save_dir=SAVE_DIR, show=SHOW_PLOTS, show_details=SHOW_DETAILS,
     )
 elif MODE == "saved_npz":
     selected_npz = NPZ_FILES or globals().get("inference_results")
@@ -97,6 +100,7 @@ elif MODE == "saved_npz":
     # 기존 셀에서 Drive를 연결하지 않았다면 먼저 연결하세요.
     structure_results = score_saved_strokes(
         selected_npz, config=structure_config, save_dir=SAVE_DIR, show=SHOW_PLOTS,
+        show_details=SHOW_DETAILS,
     )
 else:
     raise ValueError('MODE는 "csv" 또는 "saved_npz"여야 합니다.')
@@ -105,7 +109,7 @@ else:
 
 def build():
     modules = {}
-    for name in ('infer_reference', 'stroke_structure', 'score_stroke_structure', 'extraction_training'):
+    for name in ('infer_reference', 'stroke_structure', 'junction_diagnostics', 'score_stroke_structure', 'extraction_training'):
         modules['stroke_model.' + name] = (ROOT / 'stroke_model' / (name + '.py')).read_text(encoding='utf-8-sig')
     embedded = '''#@title 3. 평가 모듈 로드 (노트북에 코드 포함; GitHub 업로드 불필요)
 import sys, types
@@ -131,6 +135,9 @@ print("구조 평가 모듈 로드 완료")
 - 기준 획은 누락된 획까지 전부 준비해야 합니다. 입력 획 정답 주석은 사용하지 않습니다.
 - 원본 기준과 입력이 정렬돼 있어야 합니다. 그림 첫 줄의 기준 중심선을 확인하세요.
 - 정션(J)은 폰트와 무관하게 개별 추출 획의 구조 오류로 봅니다. 짧은 가지도 면제하지 않습니다.
+- 기본 그림은 3줄: 원본 soft mask → skeleton과 빨간 분기 원 → 학습용 soft 정션 반응입니다.
+- 표의 branch_regions_max와 levels_with_branches를 먼저 보세요. J_soft는 분기 개수가 아닙니다.
+- 여러 절대 잉크 수준에서 형상을 검사하므로 확률이 0.6인 분기를 1.8가닥으로 세지 않습니다.
 - extraction_error는 D/J 구조 이상 지표이고, reference_deficit은 M/W 기준 대비 부족량입니다.
 - 원본 글자 품질은 판정하지 않습니다. 정상 원본에서도 추출기가 정션을 만들 수 있습니다.
 - 정션은 분기 반응 근사값이고, 100점 환산이나 사람 선호 교정은 하지 않았습니다.
