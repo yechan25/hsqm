@@ -3,6 +3,8 @@ import tempfile
 from pathlib import Path
 import sys
 import unittest
+import json
+import zipfile
 from unittest.mock import patch
 import matplotlib
 matplotlib.use('Agg')
@@ -51,6 +53,13 @@ class CsvNotebookTests(unittest.TestCase):
             self.assertTrue(result[0]['image_available'])
             self.assertEqual(result[0]['image_kind'], 'scored_input_array')
             self.assertTrue(Path(ns['indicator_results']['gallery_html']).is_file())
+            with zipfile.ZipFile(ns['debug_zip']) as bundle:
+                self.assertIn('arrays/sample_0001.npz', bundle.namelist())
+                diagnostic = json.loads(bundle.read('diagnosis.json'))
+                self.assertEqual(diagnostic['samples'][0]['input'], result[0]['input'])
+                portable = json.loads(bundle.read('structure_report.json'))
+                self.assertEqual(portable['results'][0]['npz'], 'arrays/sample_0001.npz')
+                self.assertFalse(any(name.endswith('.pt') for name in bundle.namelist()))
 
     def test_random_selection_is_reproducible_and_all_mode_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,7 +69,7 @@ class CsvNotebookTests(unittest.TestCase):
             selections = []
             for seed, count in ((42, 4), (42, 4), (43, 4), (42, None)):
                 ns = self.namespace(root)
-                ns.update(RANDOM_SEED=seed, SAMPLE_COUNT=count)
+                ns.update(RANDOM_SEED=seed, SAMPLE_COUNT=count, EXPORT_DEBUG=False)
                 with patch.dict(sys.modules, {'_structural_indicator_runtime': scoring}), \
                      patch('stroke_model.score_stroke_structure.score_structure_csv', return_value={'new': True}) as infer, \
                      patch.object(scoring, 'score_structure_report', return_value={}) as score:

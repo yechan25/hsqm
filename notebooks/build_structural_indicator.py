@@ -22,6 +22,7 @@ SHOW_IMAGES = True  # 사진과 점수를 카드로 함께 표시
 IMAGES_PER_ROW = 3
 IMAGES_PER_PAGE = 12  # 저장용 PNG 한 장에 들어갈 사진 수
 SHOW_STROKE_TABLE = False  # 기본은 카드의 '획별 점수 보기'를 눌러 확인
+EXPORT_DEBUG = True  # 평가한 사진의 배열과 감점 내역만 진단 ZIP으로 저장
 
 SCORE_CONFIG = dict(
     missing_weight=1.0,   # 누락 중요도. 0이면 이 항 제외
@@ -105,10 +106,23 @@ indicator_results = score_structure_report(
     show_images=SHOW_IMAGES, images_per_row=IMAGES_PER_ROW,
     images_per_page=IMAGES_PER_PAGE, show_stroke_table=SHOW_STROKE_TABLE,
 )
+if EXPORT_DEBUG and MODE != "values":
+    from _structural_indicator_runtime import export_indicator_debug
+    debug_zip = export_indicator_debug(indicator_source, indicator_results)
+    try:
+        from google.colab import files
+        import ipywidgets as widgets
+        from IPython.display import display
+        _download = widgets.Button(description="진단 ZIP 다운로드")
+        _download.on_click(lambda _: files.download(debug_zip))
+        display(_download)
+    except ImportError:
+        pass
 '''
 
 
 def build():
+    import ast
     import runpy
     from textwrap import indent
     diagnostic_setup = runpy.run_path(str(ROOT/'notebooks/build_stroke_structure.py'))['SETUP']
@@ -127,6 +141,23 @@ def build():
         exec(compile(_source, _module.__file__, "exec"), _module.__dict__)
 '''
     source = (ROOT/'stroke_model/structural_indicator.py').read_text(encoding='utf-8-sig')
+    debug_function = next(node for node in ast.parse(source).body
+                          if isinstance(node, ast.FunctionDef) and node.name == 'export_indicator_debug')
+    debug_cell = 'from pathlib import Path\nimport json\n' + ast.get_source_segment(source, debug_function)
+    debug_cell += '''
+
+# 기존 평가 결과를 묶기만 합니다. 모델 추론/점수 계산을 반복하지 않습니다.
+_debug_source = globals().get("indicator_source")
+if _debug_source is None:
+    _debug_source = globals().get("structure_results")
+if _debug_source is None or "indicator_results" not in globals():
+    raise ValueError("사진과 점수를 평가한 기존 런타임의 마지막 새 셀에서 실행하세요.")
+debug_zip = export_indicator_debug(_debug_source, indicator_results)
+from google.colab import files
+files.download(debug_zip)
+'''
+    compile(debug_cell, '<export_indicator_debug_cell>', 'exec')
+    (ROOT/'notebooks/export_indicator_debug_cell.py').write_text(debug_cell, encoding='utf-8')
     extra_source = (ROOT/'stroke_model/extra_ink.py').read_text(encoding='utf-8-sig')
     source = source.replace('from .extra_ink import ExtraInkMetric', 'from _extra_ink_runtime import ExtraInkMetric')
     loader = '''# 점수 모듈 내장: 추가 모델·가중치 다운로드 없이 실행
