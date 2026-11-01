@@ -135,8 +135,9 @@ class StructureTests(unittest.TestCase):
                                      self.loss.config.junction_thresholds)
             self.assertGreater(hard['branch_regions_max'], 0)
             self.assertGreater(scores[-1], .005)
-        # A clear .6 T retains a shape response comparable to the unit-strength T.
-        self.assertGreater(scores[2], scores[0] * .8)
+        # Averaging threshold evidence intentionally reflects strength, but must
+        # not eliminate the clear .6 T as the old raw-arm calculation did.
+        self.assertGreater(scores[2], scores[0] * .4)
 
     def test_weak_side_branch_on_strong_trunk(self):
         for strength in (.25, .4, .6):
@@ -145,7 +146,13 @@ class StructureTests(unittest.TestCase):
             result = self.loss(mask)
             hard = diagnose_junction(mask[0].numpy(), self.loss.strokes[0].seeds[0, 0].numpy(),
                                      self.loss.config.junction_thresholds)
-            self.assertGreater(hard['branch_regions_max'], 0)
+            # A .25 arm exists at only one default level: report it as
+            # unresolved, rather than treating it as confidently branch-free.
+            if strength < .3:
+                self.assertGreater(hard['candidate_regions_max'], 0)
+                self.assertGreater(hard['unresolved_regions_max'], 0)
+            else:
+                self.assertGreater(hard['branch_regions_max'], 0)
             self.assertGreater(result['per_stroke']['junction'].item(), 1e-4)
 
     def test_blurred_and_short_weak_branches(self):
@@ -169,6 +176,32 @@ class StructureTests(unittest.TestCase):
             result = diagnose_junction(self.cases[name][0].numpy(), seed, self.loss.config.junction_thresholds)
             self.assertEqual(result['branch_regions_max'], 0, name)
 
+    def test_short_digitized_tip_is_unresolved_not_confirmed_or_silently_clean(self):
+        ink = self.reference[0].numpy().copy()
+        ink[30:32, 30] = 1
+        seed = self.loss.strokes[0].seeds[0, 0].numpy()
+        result = diagnose_junction(ink, seed, self.loss.config.junction_thresholds)
+        self.assertEqual(result['branch_regions_max'], 0)
+        self.assertGreater(result['unresolved_regions_max'], 0)
+        # Extending that same thin branch beyond the junction core resolves it.
+        ink[26:32, 30] = 1
+        result = diagnose_junction(ink, seed, self.loss.config.junction_thresholds)
+        self.assertEqual(result['branch_regions_max'], 1)
+
+    def test_reference_corner_and_short_residue_have_no_soft_junction(self):
+        residue = torch.zeros_like(self.reference)
+        residue[0, 31:34, 25:29] = .6
+        self.assertLess(self.loss(residue)['per_stroke']['junction'].item(), 1e-6)
+        corner = torch.zeros_like(self.reference)
+        corner[0, 30:35, 12:36] = 1
+        corner[0, 30:53, 31:36] = 1
+        ref = torch.zeros_like(corner)
+        ref[0, 32, 12:34] = 1
+        ref[0, 32:53, 33] = 1
+        criterion = StrokeStructureLoss(ref)
+        result = criterion(corner)
+        self.assertLess(result['per_stroke']['junction'].item(), 1e-5)
+
     def test_absolute_occupancy_does_not_amplify_missing_strokes(self):
         ink = torch.tensor([0., .01, .1, .6, 1.], requires_grad=True)
         occupancy = soft_occupancy(ink, .15, .025)
@@ -181,7 +214,9 @@ class StructureTests(unittest.TestCase):
     def test_multilevel_config_rejects_unordered_or_invalid_levels(self):
         for kwargs in ({'junction_thresholds': ()}, {'junction_thresholds': (.4, .2)},
                        {'junction_thresholds': (.2, .2)}, {'junction_thresholds': (0.,)},
-                       {'junction_temperature': 0}):
+                       {'junction_temperature': 0}, {'junction_min_levels': 0},
+                       {'junction_min_levels': 6}, {'junction_arm_scale': 0},
+                       {'junction_angular_samples': 4}):
             with self.assertRaises(ValueError):
                 StructureConfig(**kwargs)
 

@@ -26,12 +26,16 @@ def _measure(masks, geometry, config, prefix, reference=None, image=None,
     rows, diagnostics = [], []
     for k in range(len(geometry)):
         diagnostic = diagnose_junction(masks[k].detach().float().cpu().numpy(),
-            evaluator.strokes[k].seeds[0, 0].cpu().numpy(), config.junction_thresholds)
+            evaluator.strokes[k].seeds[0, 0].cpu().numpy(), config.junction_thresholds,
+            arm_scale=config.junction_arm_scale, arm_offset=config.junction_arm_offset,
+            min_arm_length=config.junction_min_arm_length, merge_radius=config.junction_merge_radius,
+            match_radius=config.junction_match_radius, min_levels=config.junction_min_levels)
         diagnostics.append(diagnostic)
         rows.append({'stroke': k + 1,
                      **{key: float(value[0, k]) for key, value in result['per_stroke'].items()},
                      'branch_regions_max': diagnostic['branch_regions_max'],
                      'levels_with_branches': diagnostic['levels_with_branches'],
+                     'unresolved_regions_max': diagnostic['unresolved_regions_max'],
                      'junction_peak_response': float(result['maps'][k]['junction'].max()),
                      'closed_reference': result['convergence'][k]['closed'],
                      'connectivity_converged': result['convergence'][k]['pairs'],
@@ -50,21 +54,22 @@ def _measure(masks, geometry, config, prefix, reference=None, image=None,
     payload['junction_level_scores'] = np.stack([m['junction_level_scores'][:, 0].cpu().numpy() for m in result['maps']])
     payload['junction_hard_skeletons'] = np.stack([d['skeleton'] for d in diagnostics])
     payload['junction_hard_branches'] = np.stack([d['branches'] for d in diagnostics])
+    payload['junction_unresolved'] = np.stack([d['uncertain'] for d in diagnostics])
     np.savez_compressed(str(prefix) + '_structure.npz', **payload)
     figures = _plot_junctions(result['maps'], rows, diagnostics, prefix, caption, show)
     figures += _plot(result['maps'], rows, prefix, caption, show and show_details)
     print(caption)
-    columns = ['stroke', 'branch_regions_max', 'levels_with_branches', 'junction', 'split', 'missing']
+    columns = ['stroke', 'branch_regions_max', 'unresolved_regions_max', 'levels_with_branches', 'junction', 'split', 'missing']
     print(frame[columns].rename(columns={'junction': 'J_soft'}).to_string(index=False,
         formatters={key: lambda x: f'{x:.3g}' for key in ('J_soft', 'split', 'missing')}))
-    print('branch_regions_max > 0: inspect red circles. J_soft is the differentiable surrogate, not a branch count.')
+    print('Red = resolved/persistent branch; amber = unresolved candidate. J_soft remains an experimental surrogate.')
     if not frame['connectivity_converged'].all() or not frame['attachment_converged'].all():
         print('Iteration cap reached: increase connectivity_steps/attachment_steps before interpreting these errors.')
     return {'strokes': rows, 'mean_errors': {key: float(value.mean()) for key, value in result['per_stroke'].items()},
             'worst_extraction_error': float(result['per_stroke']['extraction_error'].max()),
             'source_quality': result['source_quality'],
             'junction_checks': [{key: value for key, value in d.items()
-                                 if key not in ('skeleton', 'branches')} for d in diagnostics],
+                                 if key not in ('skeleton', 'branches', 'raw', 'uncertain')} for d in diagnostics],
             'csv': str(prefix) + '_errors.csv', 'npz': str(prefix) + '_structure.npz', 'figures': figures}
 
 
@@ -90,7 +95,11 @@ def _plot_junctions(maps, rows, diagnostics, prefix, caption, show):
             if diagnostic['centers']:
                 yy, xx = np.asarray(diagnostic['centers']).T
                 axes[1, col].scatter(xx, yy, s=100, facecolors='none', edgecolors='red', linewidths=1.8)
-            axes[1, col].set_title(f"Hard check: {diagnostic['branch_regions_max']} branch regions max\n"
+            if diagnostic['uncertain_centers']:
+                yy, xx = np.asarray(diagnostic['uncertain_centers']).T
+                axes[1, col].scatter(xx, yy, s=75, facecolors='none', edgecolors='#d99000', linewidths=1.4)
+            axes[1, col].set_title(f"Graph check: {diagnostic['branch_regions_max']} resolved; "
+                f"{diagnostic['unresolved_regions_max']} unresolved max\n"
                 f"shown threshold={diagnostic['selected_threshold']:.2f}; "
                 f"hits={diagnostic['levels_with_branches']}/{diagnostic['tested_levels']}", fontsize=10)
             response = item['junction'][0, 0].cpu().numpy()
@@ -103,7 +112,7 @@ def _plot_junctions(maps, rows, diagnostics, prefix, caption, show):
                 ax.axis('off')
         # ASCII fallback avoids font warnings hiding the actual diagnostic output.
         safe_caption = unicodedata.normalize('NFC', caption).encode('ascii', 'backslashreplace').decode('ascii')
-        fig.suptitle(safe_caption + '\nRed circles = discrete branch candidates. Soft heat uses a shared PAGE scale, not fixed 0..1.', fontsize=10)
+        fig.suptitle(safe_caption + '\nRed = resolved persistent branches; amber = unresolved. Soft heat uses a shared PAGE scale.', fontsize=10)
         path = str(prefix) + f'_junction_{offset//4+1}.png'
         fig.savefig(path, dpi=140)
         paths.append(path)
@@ -115,6 +124,7 @@ def _plot_junctions(maps, rows, diagnostics, prefix, caption, show):
 
 def _plot(maps, rows, prefix, caption, show):
     import matplotlib.pyplot as plt
+    import unicodedata
     paths = []
     for offset in range(0, len(maps), 4):
         page = maps[offset:offset + 4]
@@ -141,7 +151,8 @@ def _plot(maps, rows, prefix, caption, show):
                 f"M={values['missing']:.4f}  D={values['split']:.4f}\n"
                 f"J={values['junction']:.4f}  W={values['width']:.4f}",
                 transform=axes[4, col].transAxes, ha='center', va='top', fontsize=9)
-        fig.suptitle(caption + '\nExtractor defects + reference deficits. Source-image quality is NOT assessed.', fontsize=10)
+        safe_caption = unicodedata.normalize('NFC', caption).encode('ascii', 'backslashreplace').decode('ascii')
+        fig.suptitle(safe_caption + '\nExtractor defects + reference deficits. Source-image quality is NOT assessed.', fontsize=10)
         fig.tight_layout(rect=(0, .025, 1, .96))
         path = str(prefix) + f'_structure_{offset//4+1}.png'
         fig.savefig(path, dpi=140)

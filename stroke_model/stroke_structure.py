@@ -32,6 +32,18 @@ class StructureConfig:
     junction_margin: float = 0.0  # No font/short-branch exemption by default
     junction_thresholds: tuple = (0.15, 0.30, 0.45, 0.60, 0.75)
     junction_temperature: float = 0.025  # Soft occupancy transition, absolute ink
+    junction_arm_scale: float = 1.25
+    junction_arm_offset: float = 1.0
+    junction_min_arm_length: float = 2.0
+    junction_merge_radius: int = 1
+    junction_match_radius: int = 2
+    junction_min_levels: int = 2
+    junction_probe_scale: float = 1.5
+    junction_probe_offset: float = 1.0
+    junction_distance_steps: int = 12
+    junction_angular_samples: int = 48
+    junction_angular_smoothing: int = 3
+    junction_ring_margin: float = 0.1
     junction_seed_radius: int = 2
     attachment_steps: int | None = None  # None: H*W, with convergence check
     expected_width: float = 5.0  # Optional normal-width prior, NOT skeleton width
@@ -63,6 +75,22 @@ class StructureConfig:
             raise ValueError('junction_thresholds must be strictly increasing values in (0,1)')
         if not math.isfinite(self.junction_temperature) or self.junction_temperature <= 0:
             raise ValueError('junction_temperature must be finite and positive')
+        for name in ('junction_arm_scale', 'junction_min_arm_length', 'junction_probe_scale'):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+                raise ValueError(f'{name} must be positive')
+        for name in ('junction_arm_offset', 'junction_probe_offset', 'junction_ring_margin'):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
+                raise ValueError(f'{name} must be nonnegative')
+        for name in ('junction_merge_radius', 'junction_match_radius', 'junction_angular_smoothing'):
+            if not isinstance(getattr(self, name), int) or getattr(self, name) < 0:
+                raise ValueError(f'{name} must be a nonnegative integer')
+        if (not isinstance(self.junction_min_levels, int)
+                or not 1 <= self.junction_min_levels <= len(self.junction_thresholds)):
+            raise ValueError('junction_min_levels must fit the threshold count')
+        if not isinstance(self.junction_distance_steps, int) or self.junction_distance_steps < 1:
+            raise ValueError('junction_distance_steps must be a positive integer')
+        if not isinstance(self.junction_angular_samples, int) or self.junction_angular_samples < 16:
+            raise ValueError('junction_angular_samples must be an integer >= 16')
         for name in ('connectivity_steps', 'attachment_steps'):
             v = getattr(self, name)
             if v is not None and (not isinstance(v, int) or v < 1):
@@ -249,6 +277,38 @@ def soft_occupancy(mask, threshold, temperature):
     return ((torch.sigmoid((mask - tau) / temperature) - low) / (high - low)).clamp(0, 1)
 
 
+def soft_distance_to_background(occupancy, steps):
+    """Differentiable truncated chamfer distance, in input pixels.
+
+    Fixed iterations; min has the same subgradient qualification as pooling.
+    This estimates the probe scale; it never edits or fills the input mask.
+    """
+    distance = occupancy * steps
+    h, w = occupancy.shape[-2:]
+    for _ in range(steps):
+        padded = F.pad(distance, (1, 1, 1, 1), value=0)
+        neighbors = [distance]
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+            neighbors.append(padded[..., 1+dy:1+dy+h, 1+dx:1+dx+w] + math.hypot(dy, dx))
+        distance = torch.stack(neighbors).amin(0)
+    return distance
+
+
+def occupancy_ring_arms(occupancy, radius, samples, smoothing):
+    """Count resolved angular transitions on the actual occupancy, not skeleton."""
+    n, _, h, w = occupancy.shape
+    angles = torch.arange(samples, device=occupancy.device, dtype=occupancy.dtype) * (2*math.pi/samples)
+    yy, xx = torch.meshgrid(torch.arange(h, device=occupancy.device, dtype=occupancy.dtype),
+                            torch.arange(w, device=occupancy.device, dtype=occupancy.dtype), indexing='ij')
+    x = xx[None, :, :, None] + radius[:, 0, :, :, None] * angles.cos()
+    y = yy[None, :, :, None] + radius[:, 0, :, :, None] * angles.sin()
+    grid = torch.stack(((x+.5)*2/w-1, (y+.5)*2/h-1), -1).reshape(n, h, w*samples, 2)
+    ring = F.grid_sample(occupancy, grid, align_corners=False).reshape(n, 1, h, w, samples)
+    for _ in range(smoothing):
+        ring = (ring.roll(1, -1) + 2*ring + ring.roll(-1, -1))/4
+    return (ring-ring.roll(1, -1)).abs().sum(-1)/2
+
+
 def multilevel_junction(mask, seeds, config):
     """Differentiate shape per absolute level BEFORE counting skeleton arms.
 
@@ -261,11 +321,18 @@ def multilevel_junction(mask, seeds, config):
     occupancy = soft_occupancy(mask[None], tau, config.junction_temperature).reshape(levels*b, 1, h, w)
     skeleton = soft_skeleton(occupancy, config.skeleton_iterations)
     attached, converged = reconstruct(occupancy, occupancy * seeds, config.attachment_steps)
-    responses = [F.relu(_crossings(skeleton, r) - 2 - config.junction_margin).square()
-                 for r in config.junction_radii]
-    maps = (torch.stack(responses).mean(0) * skeleton * attached).reshape(levels, b, 1, h, w)
-    peak = maps.amax(0)
-    return peak, maps, converged
+    local = torch.stack([F.relu(_crossings(skeleton, r)-2-config.junction_margin).square()
+                         for r in config.junction_radii]).mean(0)
+    local = F.max_pool2d(local, 5, 1, 2)
+    distance = soft_distance_to_background(occupancy, config.junction_distance_steps)
+    radius = config.junction_probe_scale*distance + config.junction_probe_offset
+    arms = occupancy_ring_arms(occupancy, radius, config.junction_angular_samples,
+                               config.junction_angular_smoothing)
+    resolved = F.relu(arms-2-config.junction_ring_margin).square()
+    maps = (resolved * local * skeleton * attached).reshape(levels, b, 1, h, w)
+    # Average evidence instead of selecting a worst pixel from any one threshold.
+    response = maps.mean(0)
+    return response, maps, converged
 
 
 class StrokeStructureLoss(nn.Module):

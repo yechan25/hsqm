@@ -43,6 +43,18 @@ STRUCTURE_CONFIG = dict(
     junction_margin=0.0,      # 기본값: 폰트/짧은 가지에 대한 정션 면제 없음
     junction_thresholds=(0.15, 0.30, 0.45, 0.60, 0.75), # 절대 잉크 기준을 여러 개 검사
     junction_temperature=0.025, # 학습용 부드러운 이진화 전이 폭
+    junction_arm_scale=1.25,  # 그래프 검사: 접합부 반경을 국소 획 반경에 비례
+    junction_arm_offset=1.0,  # 접합부 검사 반경의 추가 픽셀
+    junction_min_arm_length=2.0, # 이보다 짧은 경로는 해상도상 미확정 후보
+    junction_merge_radius=1, # 같은 접합부의 중복 후보 병합 반경
+    junction_match_radius=2, # 잉크 기준 간 같은 접합부로 대응시킬 거리
+    junction_min_levels=2,   # 빨간 원: 이 수 이상의 기준에서 세 경로가 유지됨
+    junction_probe_scale=1.5, # soft 검사: 원본 occupancy를 읽을 국소 반경 배율
+    junction_probe_offset=1.0,
+    junction_distance_steps=12, # 미분 가능한 국소 반경 추정의 반복 횟수
+    junction_angular_samples=48, # 원형 탐색의 방향 샘플 수
+    junction_angular_smoothing=3, # 픽셀별 미세 진동을 줄이는 각도 평활 횟수
+    junction_ring_margin=0.1, # 원본 occupancy 방향 수의 수치 오차 허용
     junction_seed_radius=2,   # 기준 주변 본체에서만 연결된 가지를 탐색
     attachment_steps=None,    # None = 수렴까지. 제한 시 수렴 여부가 표에 표시됨
     expected_width=5.0,       # 정상 획의 기대 굵기. 기준 skeleton 굵기가 아님
@@ -135,8 +147,10 @@ print("구조 평가 모듈 로드 완료")
 - 기준 획은 누락된 획까지 전부 준비해야 합니다. 입력 획 정답 주석은 사용하지 않습니다.
 - 원본 기준과 입력이 정렬돼 있어야 합니다. 그림 첫 줄의 기준 중심선을 확인하세요.
 - 정션(J)은 폰트와 무관하게 개별 추출 획의 구조 오류로 봅니다. 짧은 가지도 면제하지 않습니다.
-- 기본 그림은 3줄: 원본 soft mask → skeleton과 빨간 분기 원 → 학습용 soft 정션 반응입니다.
-- 표의 branch_regions_max와 levels_with_branches를 먼저 보세요. J_soft는 분기 개수가 아닙니다.
+- 기본 그림은 3줄: 원본 mask → 그래프 검사 → 학습용 soft 반응입니다.
+- 빨강은 접합부 밖으로 세 경로가 이어지고 여러 기준에서 유지된 분기입니다. 노랑은 미확정 후보입니다.
+- branch_regions_max와 unresolved_regions_max를 함께 보세요. 0개여도 미확정 후보가 있으면 정상으로 단정하지 않습니다.
+- J_soft는 실험용 근사이며 빨간 원의 개수나 원본 품질 점수가 아닙니다.
 - 여러 절대 잉크 수준에서 형상을 검사하므로 확률이 0.6인 분기를 1.8가닥으로 세지 않습니다.
 - extraction_error는 D/J 구조 이상 지표이고, reference_deficit은 M/W 기준 대비 부족량입니다.
 - 원본 글자 품질은 판정하지 않습니다. 정상 원본에서도 추출기가 정션을 만들 수 있습니다.
