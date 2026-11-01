@@ -13,6 +13,10 @@ import torch
 from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicator, score_structure_report, _image_for_sample
 
 
+# Compatibility checks for historical stored extractor measurements.
+from functools import partial
+score_structure_report = partial(score_structure_report, measurement_mode="stored")
+
 def three_term_indicator(config=None):
     return StructuralIndicator(replace(config or IndicatorConfig(), extra_weight=0, priority_mode=False))
 

@@ -9,6 +9,10 @@ from stroke_model.extra_ink import ExtraInkMetric
 from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicator, score_structure_report
 
 
+# Compatibility checks for historical stored extractor measurements.
+from functools import partial
+score_structure_report = partial(score_structure_report, measurement_mode="stored")
+
 class ExtraInkTests(unittest.TestCase):
     def setUp(self):
         self.ref = torch.zeros(1, 32, 32)

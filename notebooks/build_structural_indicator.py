@@ -16,6 +16,14 @@ SAMPLE_COUNT = 12  # INPUT_FILES=None일 때 선택 장수. None = 전체 CSV
 RANDOM_SEED = 42  # 숫자를 바꾸면 다른 표본. 같은 숫자는 같은 CSV 행 선택
 DATASET_ROOT = None  # CSV 기준 경로로 이미지를 못 찾을 때 데이터 상위 폴더
 STRUCTURE_CONFIG = {}  # 구조 측정 기본값 사용. 필요한 항목만 덮어쓰기
+MEASUREMENT_MODE = "source"  # 실제 입력 잉크 평가. stored는 이전 추출기 진단값 재현용
+SOURCE_CONFIG = dict(
+    translation=12., rotation=15., scale_min=.85, scale_max=1.2, shear=.2,
+    registration_iterations=45, registration_prior=.00001,
+    extra_radius=2., extra_transition=.5,
+    junction_tolerance=.5, junction_position_tolerance=2,
+    coverage_radius=2, corridor_radius=3,
+)  # 원본 평가용 정렬·측정 설정. 거리 단위는 128 해상도 픽셀
 REPORT_PATH = "/content/drive/Shareddrives/2026 자율연구/HSQM/stroke_zip_runs/20261028_082616_066020/structure_20261101_092625_060835/structure_report.json"
 SAVE_DIR = None  # None = 원래 결과 폴더 아래 indicator_시간. 직접 지정 시 새 폴더
 SHOW_IMAGES = True  # 사진과 점수를 카드로 함께 표시
@@ -55,7 +63,7 @@ VALUES = [
 EXTRA_VALUE = 0.0  # MODE="values": 글자 전체의 추가 잉크 비율을 직접 지정
 '''
 
-RUN = '''from _structural_indicator_runtime import IndicatorConfig, score_structure_report
+RUN = '''from _structural_indicator_runtime import IndicatorConfig, SourceConfig, score_structure_report
 from pathlib import Path
 
 if MODE == "csv":
@@ -105,6 +113,8 @@ indicator_results = score_structure_report(
     indicator_source, config=IndicatorConfig(**SCORE_CONFIG), save_dir=SAVE_DIR,
     show_images=SHOW_IMAGES, images_per_row=IMAGES_PER_ROW,
     images_per_page=IMAGES_PER_PAGE, show_stroke_table=SHOW_STROKE_TABLE,
+    measurement_mode="stored" if MODE == "values" else MEASUREMENT_MODE,
+    source_config=SourceConfig(**SOURCE_CONFIG),
 )
 if EXPORT_DEBUG and MODE != "values":
     from _structural_indicator_runtime import export_indicator_debug
@@ -160,12 +170,22 @@ files.download(debug_zip)
     (ROOT/'notebooks/export_indicator_debug_cell.py').write_text(debug_cell, encoding='utf-8')
     extra_source = (ROOT/'stroke_model/extra_ink.py').read_text(encoding='utf-8-sig')
     source = source.replace('from .extra_ink import ExtraInkMetric', 'from _extra_ink_runtime import ExtraInkMetric')
+    source = source.replace('from .source_structure import', 'from _registered_source_runtime import')
+    source_geometry = (ROOT/'stroke_model/stroke_structure.py').read_text(encoding='utf-8-sig')
+    registered_source = (ROOT/'stroke_model/source_structure.py').read_text(encoding='utf-8-sig')
+    registered_source = registered_source.replace('from .stroke_structure import', 'from _source_geometry_runtime import')
     loader = '''# 점수 모듈 내장: 추가 모델·가중치 다운로드 없이 실행
 import sys, types
 _extra_module = types.ModuleType("_extra_ink_runtime")
 _extra_module.__file__ = "<embedded:extra_ink>"
 sys.modules[_extra_module.__name__] = _extra_module
 exec(compile(''' + repr(extra_source) + ''', _extra_module.__file__, "exec"), _extra_module.__dict__)
+_source_modules = ''' + repr({'_source_geometry_runtime':source_geometry, '_registered_source_runtime':registered_source}) + '''
+for _name, _source in _source_modules.items():
+    _module = types.ModuleType(_name)
+    _module.__file__ = "<embedded:" + _name + ">"
+    sys.modules[_name] = _module
+    exec(compile(_source, _module.__file__, "exec"), _module.__dict__)
 _score_module = types.ModuleType("_structural_indicator_runtime")
 _score_module.__file__ = "<embedded:structural_indicator>"
 sys.modules[_score_module.__name__] = _score_module
@@ -180,6 +200,12 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
 
 설문·추가 학습 없이 누락/분리/정션과 **기준으로 설명되지 않는 추가 잉크**를 감점합니다.
 높을수록 측정 오류가 적습니다. 사람 선호나 글자 품질에 교정한 점수는 아닙니다.
+
+기본 source 모드는 글자 전체의 제한된 위치·회전·크기·기울기 차이를 먼저 맞춥니다.
+누락/분리는 추출 채널 대신 실제 입력 잉크로 측정합니다. 정션은 기준의 정상 교차점보다 늘어난 분기를 측정합니다.
+stored는 추출기 오류까지 섞이던 이전 측정값의 재현용입니다. 원본의 결함 판정에 사용하지 마세요.
+source에는 전체 reference_image가 저장된 NPZ가 필요합니다. 없으면 csv 모드로 새로 추론하세요.
+정렬 최적화는 평가용 전처리입니다. 역확산 기울기는 정렬을 고정한 PreparedSourceMetric에서만 제공합니다.
 
 1. 기본 csv 모드는 테스트 CSV에서 12장을 무작위로 골라 새로 평가합니다.
 2. RANDOM_SEED를 바꾸면 다른 사진을 봅니다. INPUT_FILES에 실제 PNG 파일명 목록을 넣으면 그 사진만 평가합니다.

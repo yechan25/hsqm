@@ -1,101 +1,58 @@
-# 누락·분리·정션·추가 잉크 구조 지표
+# 원본 글자 구조 평가: 누락·추가·정션·분리
 
-평가 입력 사진과 파일명, 0~100 점수를 카드로 표시한다. 높을수록 측정 오류가 적다. 학습 없이 정해진 공식으로 계산하며, 사람의 미적 평가에 교정된 점수는 아니다.
+[점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb)은 입력 사진과 점수를 함께 표시한다. 기본 `MEASUREMENT_MODE="source"`는 실제 입력 잉크의 구조를 평가한다. `stored`는 이전 추출기 진단값 재현용이며 원본 글자 품질로 해석하지 않는다. 점수 계수는 사람이 정한 규칙이며 사람 평가에 교정된 척도는 아니다.
 
-[점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb)을 열거나 [추가 셀](../../notebooks/structural_indicator_cell.py)을 기존 구조 진단 뒤에 붙인다. `structure_results`를 재사용하거나 첫 셀 `REPORT_PATH`에 기존 `structure_report.json`을 지정한다. 저장된 NPZ가 있으면 추출기 재추론 없이 추가 잉크를 재측정한다. `MODE="values"`는 `VALUES`와 글자 전체 `EXTRA_VALUE`를 직접 넣는 수치 테스트다.
+## 정상 이미지가 낮게 나오던 원인
 
-## 다른 이미지 평가
+고정 기준 좌표에서 추출 마스크를 검사하던 이전 경로는 두 오류를 혼동했다. 첫째, 위치·회전·크기 차이를 획 누락이나 추가로 처리했다. 둘째, 추출 모델이 실제로 존재하는 획을 다른 채널에 배정하면 원본에서도 획이 없다고 판단했다. 제공된 I_0_30.png의 첫 획은 원본에 존재하지만 기존 측정은 누락 0.993으로 출력했다. 감점 가중치 조정만으로 해결할 수 없는 측정 대상의 문제였다.
 
-정상 이미지가 낮은 점수를 받으면 감점 계수를 먼저 조정하지 말고, 기준 정렬·획 추출·오류 지도를 진단해야 한다. 실행 뒤 **진단 ZIP 다운로드** 버튼으로 평가한 NPZ와 두 보고서를 함께 받는다. 이미 실행한 런타임에서는 [진단 ZIP 추가 셀](../../notebooks/export_indicator_debug_cell.py)을 마지막 새 셀에 붙이면 재추론 없이 다운로드한다. `diagnosis.json`에 점수를 제한한 항목과 획별 오류를 기록하며 체크포인트나 전체 데이터셋은 포함하지 않는다. 이 ZIP 생성은 오검출 수정 자체가 아니다.
+## 기본 source 알고리즘
 
-독립 점수 Colab의 기본값은 `MODE="csv"`다. 첫 설정 셀부터 순서대로 실행하면 `dataset/test_dataset/paths.csv`에서 12장을 선택해 기존 체크포인트로 추론한 뒤 **각 입력 사진과 점수**를 표시한다. 이 모드는 이전 `structure_results`에 들어 있던 사진을 재사용하지 않는다. 새 학습은 하지 않는다.
+1. **공통 좌표 정렬:** 전체 목표 이미지를 입력에 맞추는 하나의 제한된 affine 변환을 찾는다. 이동 ±12px, 회전 ±15도, 축별 배율 0.85~1.2, shear ±0.2가 기본이다. 목적 함수는 잉크 Dice 오차와 작은 이동 비용이다. 각 획을 따로 이동하거나 입력의 끊김을 메우지 않는다. 얻은 변환으로 입력을 목표 좌표에서 보간해 읽는다. 기준 획의 중심선은 다시 변형·스켈레톤화하지 않아 래스터 변형으로 가짜 분기가 생기는 것을 피한다.
+2. **누락 M:** 기준 중심선 주변 2px에서 실제 입력 잉크의 최대값 c를 읽고 `mean(relu(1-c/0.7)^2)`를 계산한다. 추출 마스크의 채널 값은 사용하지 않는다.
+3. **분리 D:** 기준 중심선의 지점 쌍 사이 제한 통로에서 입력 잉크를 max/min 연산으로 전파한다. 양 끝에 잉크가 있는데 연결 강도가 낮으면 감점한다. 고리에서는 반대편 우회로를 통로로 허용하지 않는다. 분리된 작은 잡음 자체를 분리 횟수로 세지 않는다.
+4. **정션 J:** 여러 절대 잉크 임계값에서 입력 중심선 주위의 원형 방향 수를 검사한다. 같은 좌표·반경에서 목표 이미지의 방향 수도 읽는다. 원본 글자 전체에는 정상적인 획 교차점이 있으므로 이를 결함으로 세지 않고, 목표보다 늘어난 방향에 반응한다. 허용 방향은 최소 2이며 위치 오차 2px와 방향 오차 0.5를 허용한다. 초과 반응을 제곱하고 입력 중심선에 곱한 뒤 기준 획까지의 거리 가중치와 획 길이로 정규화한다. 이는 추가 분기의 연속 근사이며 빨간 원 개수를 점수에 넣는 방식이 아니다.
+5. **추가 E:** 목표 잉크 주변 2px의 부드러운 허용 영역 A를 만들고 `sum(I*(1-A))/max(sum(I),1)`을 계산한다. 목표 잉크 내부에서 A=1이 되도록 정규화하여 같은 이미지에도 sigmoid 꼬리 때문에 기본 추가 감점이 생기지 않게 한다. 허용 영역을 입력 좌표로 옮겨 원본의 모든 픽셀에서 E를 계산하므로 정렬 과정에서 화면 밖으로 밀린 추가 잉크도 누락하지 않는다. 그림의 빨간색은 이 잉크 잔차이며 추가 획 개수를 확정한 결과는 아니다.
 
-- 다른 무작위 표본: `RANDOM_SEED`를 다른 정수로 변경한다. 같은 CSV와 seed는 같은 행을 고른다.
-- 장수 변경: `SAMPLE_COUNT=12`를 원하는 수로 변경한다.
-- 파일명 지정: `INPUT_FILES=["실제파일명.png", "다른파일명.png"]`. 이 경우 표본 장수와 seed는 무시한다.
-- 전체 평가: `INPUT_FILES=None`, `SAMPLE_COUNT=None`. 전체 데이터는 시간이 걸릴 수 있다.
-- 기존 결과 재계산: `MODE="auto"`와 `REPORT_PATH` 사용. 붙여넣는 추가 셀은 기존처럼 auto가 기본이다.
+입력과 목표 기준·기준 획이 모두 필요하다. `reference_image`가 없는 오래된 NPZ에서는 source 모드가 명시적으로 실패한다. CSV로 새로 추론해 전체 목표를 저장하거나, 이전 진단 재현에 한해서 stored를 선택한다. 목표가 실제로 다른 글자이거나 허용 범위를 벗어나는 변형에서는 정렬이 실패할 수 있다. 결과의 정렬 파라미터와 Dice, 카드의 **정렬 후 입력과 기준 보기**를 확인한다. 정렬로 허용한 회전·크기·기울기 자체는 이 구조 지표에서 감점하지 않는다.
 
-선택한 CSV 행과 파일명을 먼저 출력한다. CSV에는 입력 이미지와 목표 기준 이미지·기준 획 경로가 필요하다. 입력 획 정답 주석은 사용하지 않는다. 점수 공식과 기본 감점 설정은 그대로 유지한다.
+## 점수 변환
 
-## 추가 획을 놓치던 이유와 수정
+기존 v3의 감점 설정은 그대로 유지한다. 기본 가중치는 모두 1이다.
 
-기존 지표는 목표 글자의 획마다 누락 M, 분리 D, 정션 J를 계산했다. 목표에 없는 획에는 평가 채널이 없으므로, 목표 아를 야로 쓴 경우 남는 가로획이 점수에서 빠질 수 있었다. 모든 픽셀을 기존 획에 배정하는 모델에서는 미배정 잉크만 세는 방식도 충분하지 않다.
+    rM_k = 1-M_k
+    d_k = D_k/0.2,  rD_k = 1-0.60*d_k/(1+d_k)
+    j_k = J_k/0.01, rJ_k = 1-0.65*j_k/(1+j_k)
+    q_k = 100*rM_k*rD_k*rJ_k
+    Qmix = 0.5*mean(q_k)+0.5*min(q_k)
+    C_M = 100*min(rM_k), C_D = 100*min(rD_k), C_J = 100*min(rJ_k)
+    C_E = 100*exp(-max(E-0.03,0)/0.025)
+    Q = min(Qmix,C_M,C_D,C_J,C_E)
 
-이제 **입력 사진 전체**에서 목표 기준의 허용 영역 밖에 있는 잉크를 E로 측정하고, 글자 전체에 감점을 준다. 기존 획에 붙은 추가 획과 떨어진 추가 획 모두 대상이다. 작은 분리 잡음을 D에서 무시하더라도, 기준 밖에 남은 잉크는 E의 허용량을 넘으면 감점된다.
+거의 사라진 한 획은 다른 정상 획이 많아도 C_M으로 전체 점수를 제한한다. 분리·정션 단독 감점 한도는 60/65점이다. 복합 오류와 서로 다른 심각도에서는 사진들의 순서가 항상 고정되지는 않는다. 파일명이나 정상 표본의 이름으로 점수를 지정하지 않는다. 정상에 가깝게 맞도록 사후에 점수를 올리는 하한 보정도 하지 않는다.
 
-1. 목표 기준 이미지를 이진화하고 중심선을 만든다. 새 진단 NPZ의 `reference_image`를 우선 사용하며, 오래된 파일에서는 `reference`, `reference_geometry`, `reference_strokes` 순서로 찾는다.
-2. 중심선까지의 거리 d와 허용 영역 A = sigmoid((반경-d)/전이폭)을 만든다.
-3. 각 기준 채널을 ±6px 안에서 2px 간격으로 이동한 후보들을 준비한다. 중심선 주위 Gaussian(폭 2px)과 입력의 일치도에서 이동 제곱 비용을 뺀 뒤, 온도 0.01의 softmax로 후보 가중치를 구한다. 가중 평균 허용 영역들을 1-product(1-A)로 합친다. 기준 한 채널이 전체 목표 이미지라면 전체에 하나의 이동을 적용한다. 입력의 이산 argmax를 사용하지 않는다.
-4. 입력 I는 잉크=1, 배경=0으로 두고, 추가 지도 U = I × (1-A)를 계산한다.
-5. E = sum(U) / max(sum(I), 1)로 전체 입력 잉크 중 설명되지 않는 비율을 구한다.
+## 다른 이미지 / 기존 결과 실행
 
-E는 **추가 획 개수나 의미를 인식한 결과가 아니다.** 입력과 목표가 같은 좌표계에 정렬되어 있어야 한다. 위치, 크기, 굵기, 폰트 차이도 E를 증가시킬 수 있고, 허용 영역 안에 들어간 짧은 추가 획은 놓칠 수 있다. 전체 목표 이미지가 없는 기존 중심선에는 목표 정보가 부족할 수도 있다. 정상 자료로 허용 반경과 허용량을 정하고 고정한 뒤 비교해야 한다.
+독립 노트북은 `MODE="csv"`가 기본이며 테스트 CSV에서 12장을 골라 평가한다. `RANDOM_SEED`를 바꾸면 다른 표본, `SAMPLE_COUNT`는 장수, `INPUT_FILES=["실제파일명.png"]`는 파일명 선택이다. `INPUT_FILES=None`, `SAMPLE_COUNT=None`은 전체 평가다. 선택한 CSV 행과 파일명을 먼저 출력한다. 입력 획 정답 주석은 사용하지 않는다.
 
-## 점수 공식과 맨 위 설정
+이미 추론한 결과를 고치려면 `MODE="auto"`를 사용한다. 현재 런타임의 `structure_results` 또는 `REPORT_PATH`의 NPZ를 새 source 방식으로 재측정하므로 모델을 재학습하거나 재추론할 필요가 없다. 수치만 테스트하는 `MODE="values"`는 stored 공식을 사용한다.
 
-    rM_k = (1-M_k)^wM
-    d_k = wD·D_k/sD,  rD_k = 1-pD·d_k/(1+d_k)
-    j_k = wJ·J_k/sJ,  rJ_k = 1-pJ·j_k/(1+j_k)
-    q_k = 100 × rM_k × rD_k × rJ_k
-    Qmix = (1-alpha) × mean(q_k) + alpha × min(q_k)
-    C_M = 100 × min(rM_k)
-    C_D = 100 × min(rD_k), C_J = 100 × min(rJ_k)
-    C_E = 100 × exp(-wE·max(E-허용량, 0)/sE)
-    Q0 = min(Qmix, C_M, C_D, C_J)
-    Q = min(Q0, C_E)
+모든 가중치·점수 계수는 첫 셀 `SCORE_CONFIG`, 새 정렬·측정 설정은 `SOURCE_CONFIG`에 있다. source 모드에서 이전 `extra_radius`/`extra_alignment` 설정은 사용하지 않으며 SOURCE_CONFIG가 우선한다. 추가 감점 계수와 허용 비율은 여전히 SCORE_CONFIG의 extra_scale/extra_allowance다.
 
-`priority_mode=True`가 새 기본값이다. 거의 사라진 획은 C_M으로 전체 점수를 제한하여 정상 획이 많아도 희석되지 않는다. 추가도 C_E로 제한한다. 분리와 정션은 단독 오류일 때 감점 한도를 두며 기본값 pD=0.60, pJ=0.65다. 분리만 있으면 40~100, 정션만 있으면 35~100점이고, 심한 삭제·추가는 그보다 더 낮아질 수 있다. 이는 사용자가 지정한 중요도를 구현한 평가 규칙이다. 오류의 크기가 다르거나 복합 오류라면 모든 사진의 순서가 항상 고정되지는 않는다. 파일명은 계산에 사용하지 않는다.
+사진은 NPZ의 실제 평가 입력을 우선 표시한다. HTML/PNG 갤러리, 글자별/획별 CSV, 설정·등록 파라미터·새 측정값·기존 추출기 측정값을 담은 `indicator_report.json`을 저장한다. `extra_0001.npz` 등에는 원본 좌표의 입력·추가 지도와 기준 좌표의 정렬 입력·목표·정션 지도도 저장한다. 주 사진은 원본이고 펼침 그림은 진단용 정렬 사진이다.
 
-| 설정 | 기본값 | 의미 |
-|---|---:|---|
-| missing_weight / split_weight / junction_weight | 1 | 획 오류별 중요도 |
-| split_scale / junction_scale | 0.2 / 0.01 | 작을수록 해당 오류 감점 증가 |
-| worst_stroke_weight | 0.5 | 평균과 최악 획 점수의 혼합 비중 |
-| priority_mode | True | 새 중요도 규칙. False이면 이전 지수 곱셈 공식 사용 |
-| split_max_penalty / junction_max_penalty | 0.60 / 0.65 | 단독 분리 / 정션 감점 한도 |
-| extra_alignment / extra_alignment_step | 6 / 2 | 제한 이동 범위 / 후보 간격. 범위 0이면 이동 없음 |
-| extra_alignment_temperature | 0.01 | 이동 후보 softmax 온도 |
-| extra_alignment_prior | 0.001 | 이동 제곱 비용 |
-| extra_alignment_sigma | 2.0 | 중심선 일치도를 계산하는 폭 |
-| extra_weight | 1 | 추가 잉크 감점 가중치. 0이면 명시적으로 검사 제외 |
-| extra_scale | 0.025 | 허용량 초과 E가 2.5%p이면 추가 상한 100/e점 |
-| extra_allowance | 0.03 | 전체 잉크의 3%까지 추가 감점 유예 |
-| extra_radius | 8 | 기준 중심선 주위 허용 반경. 128 해상도 기준 픽셀 |
-| extra_transition | 0.5 | 허용 영역 경계의 전이 폭 |
+실행 뒤 **진단 ZIP 다운로드**로 평가한 배열과 감점 내역을 함께 받는다. 이미 실행한 런타임에서는 [진단 ZIP 추가 셀](../../notebooks/export_indicator_debug_cell.py)을 마지막 새 셀에 붙인다. 체크포인트나 전체 데이터셋은 포함하지 않는다.
 
-모든 설정은 첫 셀 `SCORE_CONFIG`에 있다. 반경은 해상도에 맞춰 조정한다. 초기값은 학습·최적화한 값이 아니다. E는 글자 전체 항이므로 획 점수 q에는 포함하지 않고 최종 글자 점수 Q에만 반영한다. 목표에서 누락된 획은 active=True로 유지하고 패딩만 제외한다. 파임 W, 빨간 원 개수, 노란 후보 개수, 파일명, 설문은 공식에 사용하지 않는다.
+## 확인한 범위
 
-실제 제공된 개발 예제 4장을 재계산하면 삭제 19.14, 추가 25.07, 분리 68.82, 정상 97.20점이다. 분리 감점 한도만 0.30에서 0.60으로 조정하여 분리는 직전 84.41점에서 68.82점으로 내려갔고, 나머지 세 예제 점수는 유지된다. 분리 예제 E는 12.1%에서 2.5%로 감소했다. 겹침은 로컬 ZIP에 원본 배열이 없어 전체 재계산하지 못했다. 사용자가 제공한 M/D/J 수치만으로 계산한 겹침 상한은 51.71점이며, E까지 측정한 최종 점수는 아니다. 이 예제들로 설계를 확인했으므로 독립 검증은 아니다. 정상 변이와 각 오류를 분리한 추가 자료에서 교정해야 한다.
+사용자가 제공한 진단 ZIP은 정상 초 변형 11장과 실제 획 삭제 1장이다. v4 재측정에서 정상 11장은 모두 100점이고, 삭제는 약 21.5점이다. 정상은 전체 affine 정렬 후 구조가 일치하므로 구조 오류값이 거의 0이다. 별도 제공된 실제 분리 예제는 기준 획 배열이 같은 것을 확인하고 ZIP의 전체 목표를 사용했을 때 약 70.3점이다. 이 자료는 설계에 사용한 개발 표본이며 독립 검증 자료가 아니다. 모든 폰트나 글자에 대한 정확도를 입증한 것은 아니다.
 
-## 사진과 진단 출력
+검사에는 정상 affine 변형, 잘못된 추출 채널, 정상 교차점과 추가 가지, 실제 잉크 삭제·추가·끊김, 빈 이미지, 고정 정렬 후 입력 기울기, 누락된 기준 거부, 사진·점수·ZIP 연결을 포함한다.
 
-사진은 NPZ의 실제 평가 입력 스냅샷을 우선 사용하고, 없으면 원본 PNG를 읽는다. 기준 이미지를 평가 사진으로 대체하지 않는다. 카드에 사진·점수·추가 잉크 비율·추가 감점 전 점수가 나온다. **추가 잉크 위치 보기**의 빨간색은 기준 허용 영역 밖의 잉크다. 정션 진단의 빨간 원과는 별도 표시다. **오류별 점수 상한 보기**에서 누락/추가/정션/분리의 상한을 확인한다. 복합 오류는 상한보다 더 낮아질 수 있다.
+    python -m unittest discover -s tests -p test_source_structure.py -v
+    python -m unittest discover -s tests -p test_indicator_csv_notebook.py -v
+    python tests/replay_source_debug.py --archive C:/path/indicator_debug.zip
 
-- `images_and_scores.html`: 내장 사진과 점수 카드, 획별 표 및 추가 위치 펼침.
-- `images_and_scores_01.png` 등: 사진과 점수 비교 그림.
-- `extra_0001.png`, `extra_0001.npz` 등: 추가 위치와 입력/허용 영역/추가 지도.
-- `glyph_scores.csv`: 최종 점수, 추가 감점 전 점수, E와 유지율.
-- `stroke_scores.csv`: 획별 M/D/J와 획 점수.
-- `indicator_report.json`: 설정과 결과, E 계산에 사용한 파일·기준 키.
+## 기울기와 역확산
 
-NPZ가 없고 E도 제공되지 않으면 기본 설정은 오류를 낸다. 추가 측정이 없다는 이유로 E=0으로 가정하지 않는다. 이전 세 항만 비교하려면 `extra_weight=0`을 명시한다. `SHOW_IMAGES`, `IMAGES_PER_ROW`, `IMAGES_PER_PAGE`, `SHOW_STROKE_TABLE`은 표시 설정이다.
-
-## 미분 가능한 사용
-
-```python
-from stroke_model.extra_ink import ExtraInkMetric
-from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicator
-
-extra_metric = ExtraInkMetric(aligned_target_strokes, radius=8, transition=.5).to(image.device)
-extra = extra_metric(image)['extra']  # image: B,1,H,W, 절대 잉크 0..1
-metric = StructuralIndicator(IndicatorConfig())
-errors = criterion(output['masks'])['per_stroke']
-result = metric(errors['missing'], errors['split'], errors['junction'],
-                active=output['active'], extra=extra)
-loss = result['penalty'].mean()  # 1-Q/100
-```
-
-기준의 이진화·스켈레톤·거리 및 이동 후보 계산은 고정 전처리이며 기준에 대한 미분은 제공하지 않는다. 이동 후보의 가중치 선택부터 U와 E는 입력 이미지에 대해 미분 가능하다. 점수는 ReLU와 최솟값 연산에서 부분 기울기를 사용한다. 최솟값 상한 방식은 지배적인 오류에 기울기를 집중하며, 여러 오류를 동시에 줄이는 학습 목적에는 별도의 보조 손실이 필요할 수 있다. 입력부터 Tensor 경로를 유지해야 한다. JSON/NPZ를 읽는 실행 함수는 평가용이며 역확산 그래프와 연결되지 않는다. 실제 scheduler 연결은 포함하지 않는다. 누락 유지율은 eps를 이용해 양 끝을 정규화하여 분수 가중치의 무한 기울기를 피한다.
-
-검사: `python -m unittest discover -s tests -p test_structural_indicator.py -v` 및 `test_extra_ink.py`, `test_priority_indicator.py`. 기존 공식·이미지 대응 검사 외에 붙은/떨어진 추가 획, 입력 기울기, E 누락 시 실패, 기존 NPZ 재측정과 추가 위치 저장을 검사한다. 정션 근사와 기준 정렬의 오류도 최종 점수에 전달되므로 원래 오류값과 지도를 함께 확인한다.
+Affine 최적화는 SciPy를 사용하는 평가용 전처리로 입력까지 미분하지 않는다. `register_reference`에서 파라미터를 한 번 구한 뒤 `PreparedSourceMetric(target,strokes,parameters=...)`를 고정해 호출하면, 입력 보간·M/D/J/E와 점수의 Tensor 경로는 입력 기울기를 유지한다. min/max/ReLU에는 부분 기울기를 사용한다. 정렬까지 포함한 완전 미분 가능 역확산 파이프라인이나 scheduler 연결은 구현하지 않았다.

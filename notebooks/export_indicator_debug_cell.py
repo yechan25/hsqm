@@ -34,6 +34,9 @@ def export_indicator_debug(structure_report, indicator_report, destination=None)
                 sample.pop('input_npz', None)
             else:
                 missing.append(number)
+            measurement=score.get('measurement_npz')
+            if measurement and Path(measurement).is_file():
+                archive.write(measurement,f'measurements/sample_{number:04d}.npz')
             caps = {key: score[key+'_score_cap'] for key in ('missing', 'extra', 'junction', 'split')}
             limiting = min(caps, key=caps.get)
             if score['structural_score'] < min(caps.values())-1e-5:

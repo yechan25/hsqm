@@ -12,6 +12,7 @@ from pathlib import Path
 import torch
 from torch import nn
 from .extra_ink import ExtraInkMetric
+from .source_structure import SourceConfig, register_reference, PreparedSourceMetric
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,39 @@ def _extra_for_sample(sample, source_path, config):
                      'Do not treat absent extra measurements as zero; extra_weight=0 explicitly opts out.')
 
 
+def _source_for_sample(sample, source_path, config):
+    import numpy as np
+    for key in ('npz', 'input_npz'):
+        if not sample.get(key):
+            continue
+        candidates = [Path(sample[key])]
+        if source_path and not candidates[0].is_absolute():
+            candidates.append(source_path.parent/candidates[0])
+        for path in candidates:
+            if not path.is_file():
+                continue
+            with np.load(path, allow_pickle=False) as data:
+                target_key = next((k for k in ('reference_image','reference') if k in data), None)
+                if target_key is None or 'image' not in data or 'reference_strokes' not in data:
+                    continue
+                image = data['image'].copy()
+                target, strokes, registration = register_reference(image, data[target_key],
+                    data['reference_strokes'], config)
+            evaluator = PreparedSourceMetric(target, strokes, config, parameters=registration['parameters'])
+            with torch.no_grad():
+                measured = evaluator(torch.tensor(image))
+            values = [measured[k][0].double() for k in ('missing','split','junction')]
+            maps = {'image': measured['source_image'][0,0].numpy(),
+                    'registered_image':measured['registered_image'][0,0].numpy(),
+                    'reference_image':target, 'extra_map':measured['extra_map'][0,0].numpy(),
+                    'junction_map':measured['junction_map'][0,0].numpy(),
+                    'support':measured['support'][0,0].numpy()}
+            return values, float(measured['extra'][0]), maps, str(path), registration
+    raise ValueError('Source scoring needs NPZ image, full reference_image and reference_strokes. '
+                     'Rerun CSV extraction to save the full target, or explicitly use measurement_mode="stored" '
+                     'for historical extractor diagnostics; those are not source-quality measurements.')
+
+
 def _image_for_sample(sample, source_path):
     """Prefer the scored input snapshot; never substitute a reference/montage."""
     import numpy as np
@@ -253,11 +287,23 @@ def _score_gallery(samples, scored, destination, source_path, columns, per_page,
                       + cap_rows + '</table><p>복합 오류는 상한보다 더 낮아질 수 있습니다.</p></details>')
         if not result['priority_mode']:
             cap_detail = '<p>이전 지수 곱셈 공식: 점수 상한 미적용</p>'
+        source_detail = ''
+        if result.get('measurement_mode') == 'source':
+            import numpy as np
+            from PIL import Image
+            with np.load(result['measurement_npz'], allow_pickle=False) as maps:
+                pictures=[]
+                for key,label in [('registered_image','정렬 후 입력'),('reference_image','목표 기준')]:
+                    buffer=io.BytesIO()
+                    Image.fromarray(np.rint(255*(1-maps[key])).astype(np.uint8)).save(buffer,format='PNG')
+                    encoded=base64.b64encode(buffer.getvalue()).decode('ascii')
+                    pictures.append(f'<p>{label}</p><img src="data:image/png;base64,{encoded}" alt="{label}">')
+            source_detail=('<details><summary>정렬 후 입력과 기준 보기</summary>'+''.join(pictures)+'</details>')
         cards.append(f'<article class="indicator-card">{picture}'
                      f'<div class="indicator-name">{number}. {html.escape(name)}</div>'
                      f'<div class="indicator-score">{result["structural_score"]:.1f}<span> / 100</span></div>'
                      f'<div class="indicator-note">{note if image is not None else "이미지 없는 수치 입력"}</div>'
-                     f'<div class="indicator-note">{extra_note}</div>{extra_detail}{cap_detail}'
+                     f'<div class="indicator-note">{extra_note}</div>{source_detail}{extra_detail}{cap_detail}'
                      '<details><summary>획별 점수 보기</summary><table><thead><tr><th>획</th><th>점수</th>'
                      f'<th>누락</th><th>분리</th><th>정션</th></tr></thead><tbody>{detail_rows}</tbody></table></details></article>')
     style = f'''<style>
@@ -310,13 +356,17 @@ def _score_gallery(samples, scored, destination, source_path, columns, per_page,
 
 
 def score_structure_report(report, config=None, save_dir=None, *, show_images=True,
-                           images_per_row=3, images_per_page=12, show_stroke_table=False):
+                           images_per_row=3, images_per_page=12, show_stroke_table=False,
+                           measurement_mode='source', source_config=None):
     """Score an existing structure_report.json/dict without rerunning extraction.
 
     Returns an auditable report and saves glyph_scores.csv, stroke_scores.csv,
     indicator_report.json. Uses M/D/J and remeasured extra ink; no filename-based scoring.
     """
     import pandas as pd
+    if measurement_mode not in ('source','stored'):
+        raise ValueError('measurement_mode must be source or stored')
+    source_cfg = source_config or SourceConfig()
 
     if any(not isinstance(v, int) or v < 1 for v in (images_per_row, images_per_page)):
         raise ValueError('Gallery row/page counts must be positive integers')
@@ -338,9 +388,16 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
         strokes = sample.get('strokes', [])
         if not strokes:
             raise ValueError(f'Sample {number} has no per-stroke measurements')
-        missing, split, junction = [torch.tensor([s[key] for s in strokes], dtype=torch.float64)
-                                     for key in ('missing', 'split', 'junction')]
-        extra, extra_maps, extra_source = _extra_for_sample(sample, source_path, cfg)
+        registration = None
+        if measurement_mode == 'source':
+            (missing, split, junction), extra, extra_maps, extra_source, registration = _source_for_sample(
+                sample, source_path, source_cfg)
+            if len(missing) != len(strokes):
+                raise ValueError('Stored report and target have different stroke counts')
+        else:
+            missing, split, junction = [torch.tensor([s[key] for s in strokes], dtype=torch.float64)
+                                         for key in ('missing', 'split', 'junction')]
+            extra, extra_maps, extra_source = _extra_for_sample(sample, source_path, cfg)
         with torch.no_grad():
             output = scorer(missing, split, junction, extra=[extra])
         identity = {'sample': number, 'csv_row': sample.get('csv_row'),
@@ -364,22 +421,30 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
             stroke_rows.append(row)
             scored_strokes.append(row)
         extra_overlay = None
+        measurement_npz = None
         if extra_maps is not None:
             import numpy as np
             from PIL import Image
-            np.savez_compressed(destination/f'extra_{number:04d}.npz', **extra_maps)
+            measurement_npz = destination/f'extra_{number:04d}.npz'
+            np.savez_compressed(measurement_npz, **extra_maps)
             background = np.repeat((1-extra_maps['image'])[..., None], 3, axis=-1)
             alpha = np.clip(extra_maps['extra_map'], 0, 1)[..., None]
             colored = background*(1-alpha) + np.array([1., 0., 0.])*alpha
             extra_overlay = destination/f'extra_{number:04d}.png'
             Image.fromarray(np.rint(colored*255).astype(np.uint8)).save(extra_overlay)
         results.append({**glyph, 'extra_source': extra_source,
+                        'measurement_mode': measurement_mode, 'registration': registration,
+                        'measurement_npz':str(measurement_npz) if measurement_npz else None,
+                        'extractor_strokes': strokes if measurement_mode == 'source' else None,
                         'extra_overlay': str(extra_overlay) if extra_overlay else None, 'strokes': scored_strokes})
     pd.DataFrame(glyph_rows).to_csv(destination / 'glyph_scores.csv', index=False, encoding='utf-8-sig')
     pd.DataFrame(stroke_rows).to_csv(destination / 'stroke_scores.csv', index=False, encoding='utf-8-sig')
     gallery, gallery_images = _score_gallery(report['results'], results, destination, source_path,
                                              images_per_row, images_per_page, show_images)
-    output_report = {'indicator': 'structural_indicator_v3_priority', 'range': [0, 100],
+    output_report = {'indicator': ('structural_indicator_v4_registered_source' if measurement_mode == 'source'
+                                  else 'structural_indicator_v3_priority'), 'range': [0, 100],
+                     'measurement_mode':measurement_mode,
+                     'source_config':asdict(source_cfg) if measurement_mode == 'source' else None,
                      'uses_only': ['missing', 'split', 'junction'] + (['extra'] if cfg.extra_weight > 0 else []), 'trained': False,
                      'calibrated_to_human_quality': False, 'config': asdict(cfg),
                      'measurement_config': report.get('config'), 'source_report': str(source_path) if source_path else None,
@@ -433,6 +498,9 @@ def export_indicator_debug(structure_report, indicator_report, destination=None)
                 sample.pop('input_npz', None)
             else:
                 missing.append(number)
+            measurement=score.get('measurement_npz')
+            if measurement and Path(measurement).is_file():
+                archive.write(measurement,f'measurements/sample_{number:04d}.npz')
             caps = {key: score[key+'_score_cap'] for key in ('missing', 'extra', 'junction', 'split')}
             limiting = min(caps, key=caps.get)
             if score['structural_score'] < min(caps.values())-1e-5:
