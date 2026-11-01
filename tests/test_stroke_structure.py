@@ -1,0 +1,221 @@
+"""Behavioral and gradient checks on known stroke errors, without a checkpoint."""
+import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+import matplotlib
+matplotlib.use('Agg')
+import numpy as np
+import pandas as pd
+import torch
+from PIL import Image
+from skimage.draw import circle_perimeter
+
+from stroke_model.stroke_structure import StructureConfig, StrokeStructureLoss, reconstruct
+from stroke_model.score_stroke_structure import score_saved_strokes, score_structure_csv
+
+
+def line_cases(size=64):
+    reference = torch.zeros(1, size, size)
+    reference[0, 32, 8:56] = 1
+    normal = torch.zeros_like(reference)
+    normal[0, 30:35, 8:56] = 1
+    cases = {'normal': normal, 'missing': torch.zeros_like(normal)}
+    cases['gap'] = normal.clone()
+    cases['gap'][0, :, 30:34] = 0
+    cases['partial'] = normal.clone()
+    cases['partial'][0, :, 40:] = 0
+    cases['branch'] = normal.clone()
+    cases['branch'][0, 15:32, 30:35] = 1
+    cases['noise'] = normal.clone()
+    cases['noise'][0, 8:11, 44:47] = 1
+    cases['notch'] = normal.clone()
+    cases['notch'][0, 30:32, 22:30] = 0
+    return reference, cases
+
+
+class StructureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.previous_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+        cls.reference, cls.cases = line_cases()
+        cls.loss = StrokeStructureLoss(cls.reference, StructureConfig(width_weight=1))
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.previous_threads)
+
+    def values(self, mask):
+        return {name: v.item() for name, v in self.loss(mask)['per_stroke'].items()}
+
+    def test_error_types_and_detached_noise(self):
+        v = {name: self.values(mask) for name, mask in self.cases.items()}
+        self.assertLess(v['normal']['extraction_error'], .02)
+        self.assertGreater(v['missing']['missing'], .99)
+        self.assertEqual(v['missing']['split'], 0)
+        self.assertGreater(v['gap']['split'], .05)
+        self.assertGreater(v['partial']['missing'], .15)
+        self.assertGreater(v['branch']['junction'], v['normal']['junction'] + .005)
+        self.assertGreater(v['notch']['width'], v['normal']['width'] + .0001)
+        for name in ('missing', 'split', 'junction', 'width'):
+            self.assertAlmostEqual(v['noise'][name], v['normal'][name], places=6)
+
+    def test_closed_ring_cut_is_detected(self):
+        reference = np.zeros((64, 64), dtype=np.float32)
+        yy, xx = circle_perimeter(32, 32, 17)
+        reference[yy, xx] = 1
+        yy, xx = np.indices(reference.shape)
+        normal = torch.tensor((np.abs(np.sqrt((yy-32)**2 + (xx-32)**2) - 17) <= 2).astype(np.float32))[None]
+        loss = StrokeStructureLoss(reference[None], StructureConfig())
+        cut = normal.clone()
+        cut[0, 30:35, 46:] = 0
+        before, after = loss(normal), loss(cut)
+        self.assertTrue(before['convergence'][0]['closed'])
+        self.assertLess(before['per_stroke']['split'].item(), 1e-5)
+        self.assertGreater(after['per_stroke']['split'].item(), .01)
+        self.assertLess(before['per_stroke']['junction'].item(), .02)
+
+    def test_coverage_allows_small_translation(self):
+        shifted = torch.roll(self.cases['normal'], 1, dims=1)
+        self.assertLess(self.values(shifted)['missing'], 1e-6)
+        self.assertLess(self.values(shifted)['split'], 1e-6)
+
+    def test_live_graph_gradients_and_maps(self):
+        mask = self.cases['gap'].clone()
+        mask[:, 30:35, 30:34] = .2
+        mask.requires_grad_(True)
+        result = self.loss(mask, return_maps=True)
+        self.assertTrue(result['loss'].requires_grad)
+        gradient, = torch.autograd.grad(result['loss'], mask)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient.abs().sum().item(), 0)
+        # Filling the known gap must lower the connectivity error.
+        split_grad, = torch.autograd.grad(self.loss(mask)['per_stroke']['split'].sum(), mask)
+        self.assertLess(split_grad[:, 30:35, 30:34].sum().item(), 0)
+        repaired = mask.detach().clone()
+        repaired[:, 30:35, 30:34] = .6
+        self.assertLess(self.loss(repaired)['per_stroke']['split'].item(),
+                        result['per_stroke']['split'].item())
+        self.assertEqual(tuple(result['maps'][0]['missing'].shape), (1, 1, 64, 64))
+        self.assertTrue(all(c['pairs'] and c['attachment'] for c in result['convergence']))
+
+    def test_missing_gradient_encourages_ink(self):
+        mask = torch.zeros_like(self.cases['normal'], requires_grad=True)
+        grad, = torch.autograd.grad(self.loss(mask)['per_stroke']['missing'].sum(), mask)
+        self.assertLess(grad.sum().item(), 0)
+
+    def test_source_quality_is_not_inferred_from_extraction(self):
+        result = self.loss(self.cases['branch'])
+        self.assertFalse(result['source_quality']['assessed'])
+        self.assertNotIn('total', result['per_stroke'])
+        self.assertGreater(result['per_stroke']['extraction_error'].item(), 0)
+        empty = self.loss(self.cases['missing'])
+        self.assertEqual(empty['loss'].item(), 0)
+        self.assertGreater(empty['reference_loss'].item(), .99)
+
+    def test_short_attached_branch_is_not_exempted_as_font_style(self):
+        short = self.cases['normal'].clone()
+        short[:, 27:30, 30:33] = 1
+        self.assertGreater(self.loss(short)['per_stroke']['junction'].item(), 0)
+
+    def test_split_directional_finite_difference(self):
+        mask = self.cases['normal'].clone() * .85
+        mask[:, 30:35, 30:34] = .23
+        mask.requires_grad_(True)
+        direction = torch.zeros_like(mask)
+        direction[:, 30:35, 30:34] = 1
+        value = self.loss(mask)['per_stroke']['split'].sum()
+        grad, = torch.autograd.grad(value, mask)
+        delta = 1e-3
+        plus = self.loss(mask.detach() + delta*direction)['per_stroke']['split'].sum()
+        minus = self.loss(mask.detach() - delta*direction)['per_stroke']['split'].sum()
+        self.assertAlmostEqual((grad*direction).sum().item(), ((plus-minus)/(2*delta)).item(), places=3)
+
+    def test_junction_gradient_and_branch_shortening(self):
+        # Nonuniform positive ink avoids nondifferentiable equal-value pooling
+        # ties, where a central finite difference need not equal a subgradient.
+        generator = torch.Generator().manual_seed(42)
+        ink = .8 + .15 * torch.rand(self.cases['branch'].shape, generator=generator)
+        mask = (self.cases['branch'] * ink).requires_grad_(True)
+        value = self.loss(mask)['per_stroke']['junction'].sum()
+        gradient, = torch.autograd.grad(value, mask)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient.abs().sum().item(), 0)
+        # Weakening the added branch must reduce the junction response.
+        direction = torch.zeros_like(mask)
+        direction[:, 15:30, 30:35] = 1
+        self.assertGreater((gradient*direction).sum().item(), 0)
+        delta = 1e-5
+        plus = self.loss(mask.detach()+delta*direction)['per_stroke']['junction'].sum()
+        minus = self.loss(mask.detach()-delta*direction)['per_stroke']['junction'].sum()
+        self.assertAlmostEqual((gradient*direction).sum().item(), ((plus-minus)/(2*delta)).item(), delta=.001)
+
+    def test_batch_and_short_caps_reported(self):
+        batch = torch.stack([self.cases['normal'], self.cases['gap']])
+        result = self.loss(batch)
+        self.assertEqual(tuple(result['per_stroke']['missing'].shape), (2, 1))
+        capped = StrokeStructureLoss(self.reference, StructureConfig(connectivity_steps=1, attachment_steps=1))
+        status = capped(self.cases['normal'])['convergence'][0]
+        self.assertFalse(status['pairs'])
+
+    def test_invalid_reference_and_config(self):
+        with self.assertRaisesRegex(ValueError, 'Reference stroke 1'):
+            StrokeStructureLoss(torch.zeros_like(self.reference))
+        for kwargs in ({'required_ink': 0}, {'anchor_radius': -1}, {'connectivity_steps': 0}, {'pair_spans': ()}):
+            with self.assertRaises(ValueError):
+                StructureConfig(**kwargs)
+        with self.assertRaises(ValueError):
+            self.loss(self.cases['normal'] * 2)
+
+    def test_reconstruction_respects_barrier(self):
+        m = torch.ones(1, 1, 7, 12)
+        m[..., 5] = 0
+        seed = torch.zeros_like(m)
+        seed[..., 0] = 1
+        reached, converged = reconstruct(m, seed)
+        self.assertTrue(converged)
+        self.assertEqual(reached[..., 6:].sum().item(), 0)
+
+    def test_saved_inference_report_and_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'prediction.npz'
+            np.savez_compressed(path, soft_masks=self.cases['gap'].numpy(),
+                                reference_strokes=self.reference.numpy())
+            report = score_saved_strokes({'results': [{'npz': str(path)}]},
+                save_dir=Path(tmp) / 'scores', show=False)
+            saved = json.loads((Path(tmp) / 'scores/structure_report.json').read_text())
+            row = saved['results'][0]['strokes'][0]
+            self.assertGreater(row['split'], .05)
+            self.assertEqual(report['config']['width_weight'], 0)
+            for name in ('csv', 'npz'):
+                self.assertTrue(Path(saved['results'][0][name]).is_file())
+            self.assertTrue(Path(saved['results'][0]['figures'][0]).is_file())
+
+    def test_csv_filename_integration_ignores_annotations(self):
+        class FakeModel(torch.nn.Module):
+            def __init__(self, **kwargs):
+                super().__init__()
+
+            def forward(self, image, reference, strokes):
+                return {'masks': image.expand_as(strokes), 'hints': strokes}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, value in [('reference', self.cases['normal']), ('gap', self.cases['gap'])]:
+                Image.fromarray((255*(1-value[0].numpy())).astype(np.uint8)).save(root / (name + '.png'))
+            pd.DataFrame([{'input_path': 'gap.png', 'target_path': 'reference.png',
+                           'target_stroke_paths': 'reference.png',
+                           'input_stroke_paths': 'nonexistent_annotations.png'}]).to_csv(root / 'paths.csv', index=False)
+            torch.save({'model': {}, 'image_size': 64, 'width': 4}, root / 'best.pt')
+            with patch('stroke_model.reference_model.ReferenceStrokeModel', FakeModel):
+                report = score_structure_csv(root / 'best.pt', root / 'paths.csv',
+                    input_files=['gap.png'], save_dir=root / 'scores', show=False)
+            self.assertFalse(report['uses_input_stroke_annotations'])
+            self.assertEqual(report['results'][0]['csv_row'], 1)
+            self.assertGreater(report['results'][0]['strokes'][0]['split'], .05)
+
+
+if __name__ == '__main__':
+    unittest.main()
