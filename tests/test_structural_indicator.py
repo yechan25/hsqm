@@ -14,7 +14,7 @@ from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicat
 
 
 def three_term_indicator(config=None):
-    return StructuralIndicator(replace(config or IndicatorConfig(), extra_weight=0))
+    return StructuralIndicator(replace(config or IndicatorConfig(), extra_weight=0, priority_mode=False))
 
 
 class IndicatorTests(unittest.TestCase):
@@ -109,8 +109,8 @@ class IndicatorTests(unittest.TestCase):
         other['results'][0]['strokes'][0].update(width=0, branch_regions_max=0)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            first = score_structure_report(base, save_dir=root/'first', show_images=False, config=IndicatorConfig(extra_weight=0))
-            second = score_structure_report(other, save_dir=root/'second', show_images=False, config=IndicatorConfig(extra_weight=0))
+            first = score_structure_report(base, save_dir=root/'first', show_images=False, config=IndicatorConfig(extra_weight=0, priority_mode=False))
+            second = score_structure_report(other, save_dir=root/'second', show_images=False, config=IndicatorConfig(extra_weight=0, priority_mode=False))
             self.assertEqual(first['results'][0]['structural_score'], second['results'][0]['structural_score'])
             self.assertEqual(first['uses_only'], ['missing', 'split', 'junction'])
             self.assertFalse(first['trained'])
@@ -126,7 +126,7 @@ class IndicatorTests(unittest.TestCase):
             Image.new('RGB', (12, 12), (0, 0, 255)).save(root/'second.png')
             report = {'results': [{'input': str(root/f'{name}.png'), 'strokes': [
                 {'missing': missing, 'split': 0, 'junction': 0}]} for name, missing in [('first', 0), ('second', .5)]]}
-            result = score_structure_report(report, save_dir=root/'scores', show_images=False, config=IndicatorConfig(extra_weight=0))
+            result = score_structure_report(report, save_dir=root/'scores', show_images=False, config=IndicatorConfig(extra_weight=0, priority_mode=False))
             self.assertEqual(result['results'][0]['structural_score'], 100)
             self.assertAlmostEqual(result['results'][1]['structural_score'], 50)
             self.assertEqual(Path(result['results'][0]['image_source']).name, 'first.png')

@@ -19,14 +19,22 @@ SCORE_CONFIG = dict(
     missing_weight=1.0,   # 누락 중요도. 0이면 이 항 제외
     split_weight=1.0,     # 분리 중요도
     junction_weight=1.0,  # 정션 중요도
-    split_scale=0.2,      # 분리값이 이 크기일 때 이 항의 유지율은 exp(-1)
-    junction_scale=0.01,  # 정션값이 이 크기일 때 이 항의 유지율은 exp(-1)
+    split_scale=0.2,      # 기본 모드: 이 크기에서 분리 최대 감점의 절반
+    junction_scale=0.01,  # 기본 모드: 이 크기에서 정션 최대 감점의 절반
     worst_stroke_weight=0.5, # 글자 점수: 획 평균과 최악 획 점수의 혼합. 0=평균, 1=최악
+    priority_mode=True,   # 삭제/추가 강한 감점, 정션/분리 제한 감점. False=이전 공식
+    split_max_penalty=0.30, # 분리 단독 최대 감점 30점
+    junction_max_penalty=0.65, # 정션 단독 최대 감점 65점
     extra_weight=1.0,     # 추가 잉크 감점. 0은 명시적으로 추가 검사를 끄는 설정
-    extra_scale=0.05,     # 허용량을 넘은 추가 잉크 5%에서 유지율 exp(-1)
-    extra_allowance=0.02, # 작은 잉크 잔상/정렬 변동 허용 비율
+    extra_scale=0.025,    # 허용량 초과 2.5%p일 때 추가 점수 상한 100/e
+    extra_allowance=0.03, # 정렬 후 남은 작은 잉크 차이 3%까지 감점 유예
     extra_radius=8.0,     # 목표 기준 중심선 주변의 허용 반경 (128 해상도 픽셀)
     extra_transition=0.5, # 허용 영역 경계의 부드러운 전이 폭
+    extra_alignment=6,    # 기준 위치를 ±6px 안에서만 이동 허용
+    extra_alignment_step=2, # 이동 후보 간격
+    extra_alignment_temperature=0.01, # 부드러운 위치 선택 온도
+    extra_alignment_prior=0.001, # 큰 이동을 억제하는 비용
+    extra_alignment_sigma=2.0, # 위치 일치도를 계산하는 중심선 주변 폭
     eps=1e-6,
 )
 
@@ -100,14 +108,19 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
 이 독립 파일을 새로 열었다면 REPORT_PATH를 결과 JSON 경로로 지정하세요.
 MODE="values"는 숫자만 입력하는 테스트입니다. 기존 추출 모델을 재실행하지 않습니다.
 
-획 점수 = 100 × (1-M)^wM × exp(-wD·D/sD-wJ·J/sJ)
-
-글자 기본점수 = (1-최악획비중) × 획 평균 + 최악획비중 × 최저 획 점수
-최종 점수 = 기본점수 × exp(-추가가중치 × max(추가비율-허용량,0)/추가scale)
+기본 모드는 **획 추가·삭제를 강하게, 정션을 중간, 분리를 약하게** 감점하는 평가 규칙입니다.
+분리 유지율 = 1 - 분리최대감점 × (wD·D/sD)/(1+wD·D/sD)
+정션 유지율 = 1 - 정션최대감점 × (wJ·J/sJ)/(1+wJ·J/sJ)
+획 점수 = 100 × (1-M)^wM × 분리 유지율 × 정션 유지율
+평균/최악 획 혼합점수와 각 오류별 점수 상한 중 최솟값을 사용합니다.
+삭제 상한 = 최악 획의 누락 유지율 × 100. 추가 상한 = 100 × exp(-wE·max(E-허용량,0)/추가scale).
+단독 분리/정션은 기본값에서 최대 30/65점 감점이고, 복합 오류는 더 낮아질 수 있습니다.
+카드의 '오류별 점수 상한 보기'에서 점수가 낮아진 원인을 확인하세요.
 
 기본값에서 누락 1인 획은 0점, 세 오류가 0인 획은 100점입니다.
 각 카드의 '추가 잉크 위치 보기'에서 빨간 영역을 확인하세요. 추가는 획 배정과 무관하게 입력 전체에서 측정합니다.
-기준과 입력의 정렬이 어긋나면 추가를 과검출할 수 있습니다. 반경과 허용량은 정상 자료에서 교정해야 합니다.
+기준 위치는 제한된 범위에서 부드럽게 정렬합니다. 큰 변형이나 정렬 실패는 추가로 오검출할 수 있습니다.
+반경과 허용량은 정상 자료에서 교정해야 합니다. 이름별로 점수나 오류 순서를 강제하지 않습니다.
 오래된 JSON도 NPZ의 image/reference_geometry가 있으면 추가를 재측정합니다. 없으면 0으로 가정하지 않고 오류를 냅니다.
 '''), cell('code', SETTINGS), cell('code', loader), cell('code', RUN)],
         'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},

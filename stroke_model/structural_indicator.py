@@ -22,11 +22,19 @@ class IndicatorConfig:
     split_scale: float = 0.2
     junction_scale: float = 0.01
     worst_stroke_weight: float = 0.5
+    priority_mode: bool = True
+    split_max_penalty: float = 0.30
+    junction_max_penalty: float = 0.65
     extra_weight: float = 1.0
-    extra_scale: float = 0.05
-    extra_allowance: float = 0.02
+    extra_scale: float = 0.025
+    extra_allowance: float = 0.03
     extra_radius: float = 8.0
     extra_transition: float = 0.5
+    extra_alignment: int = 6
+    extra_alignment_step: int = 2
+    extra_alignment_temperature: float = 0.01
+    extra_alignment_prior: float = 0.001
+    extra_alignment_sigma: float = 2.0
     eps: float = 1e-6
 
     def __post_init__(self):
@@ -44,16 +52,24 @@ class IndicatorConfig:
                 raise ValueError('weight/scale must fit a finite float32 coefficient')
         if not 0 <= self.worst_stroke_weight <= 1:
             raise ValueError('worst_stroke_weight must be in [0,1]')
+        if not isinstance(self.priority_mode, bool):
+            raise ValueError('priority_mode must be bool')
+        if not 0 <= self.split_max_penalty <= self.junction_max_penalty < 1:
+            raise ValueError('Require 0 <= split_max_penalty <= junction_max_penalty < 1')
+        if (not isinstance(self.extra_alignment, int) or self.extra_alignment < 0
+                or not isinstance(self.extra_alignment_step, int) or self.extra_alignment_step < 1
+                or self.extra_alignment_temperature <= 0 or self.extra_alignment_prior < 0
+                or self.extra_alignment_sigma <= 0):
+            raise ValueError('Invalid bounded alignment settings')
 
 
 class StructuralIndicator(nn.Module):
-    """Map M,D,J and whole-glyph extra ink to scores without training.
+    """Reference error scores with configurable severity priorities.
 
-    Inputs: K or B,K. Missing is in [0,1]; split/junction are nonnegative.
-    q_k = 100*(1-M_k)^wM * exp(-wD*D_k/sD-wJ*J_k/sJ)
-    Q0 = (1-alpha)*mean(q_k) + alpha*min(q_k), over active reference strokes.
-    Q = Q0*exp(-wE*relu(E-extra_allowance)/extra_scale).
-    min has subgradients; the full pipeline is not everywhere smooth.
+    Priority mode bounds isolated split/junction penalties and caps the glyph
+    score by its worst missing stroke and unexplained ink. Combined defects
+    can still score below the isolated-error bands. min uses subgradients.
+    priority_mode=False reproduces the legacy exponential aggregation.
     """
     def __init__(self, config=None):
         super().__init__()
@@ -91,10 +107,19 @@ class StructuralIndicator(nn.Module):
             retain_m = ((1-missing+epsilon).pow(cfg.missing_weight)-lower)/denominator
         retain_d = torch.exp(-(cfg.split_weight/cfg.split_scale) * split)
         retain_j = torch.exp(-(cfg.junction_weight/cfg.junction_scale) * junction)
+        if cfg.priority_mode:
+            d = (cfg.split_weight/cfg.split_scale)*split
+            j = (cfg.junction_weight/cfg.junction_scale)*junction
+            retain_d = 1-cfg.split_max_penalty*(1-1/(1+d))
+            retain_j = 1-cfg.junction_max_penalty*(1-1/(1+j))
         stroke_scores = 100 * retain_m * retain_d * retain_j
         mean = (stroke_scores * active).sum(1) / active.sum(1)
         worst = stroke_scores.masked_fill(~active, torch.inf).amin(1)
         base_score = (1-cfg.worst_stroke_weight)*mean + cfg.worst_stroke_weight*worst
+        cap = lambda retain: 100*retain.masked_fill(~active, torch.inf).amin(1)
+        missing_cap, split_cap, junction_cap = [cap(r) for r in (retain_m, retain_d, retain_j)]
+        if cfg.priority_mode:
+            base_score = torch.stack([base_score, missing_cap, split_cap, junction_cap]).amin(0)
         if extra is None:
             if cfg.extra_weight > 0:
                 raise ValueError('Added ink is required: provide extra or explicitly set extra_weight=0')
@@ -106,10 +131,12 @@ class StructuralIndicator(nn.Module):
             raise ValueError('extra must contain one finite [0,1] fraction per glyph')
         extra_penalty = torch.relu(extra-cfg.extra_allowance)
         extra_retention = torch.exp(-(cfg.extra_weight/cfg.extra_scale)*extra_penalty)
-        score = base_score * extra_retention
+        extra_cap = 100*extra_retention
+        score = torch.minimum(base_score, extra_cap) if cfg.priority_mode else base_score * extra_retention
         return {'score': score, 'stroke_scores': stroke_scores, 'mean_score': mean,
                 'worst_score': worst, 'penalty': 1-score/100, 'active': active,
                 'base_score': base_score, 'extra': extra, 'extra_retention': extra_retention,
+                'caps': {'missing': missing_cap, 'split': split_cap, 'junction': junction_cap, 'extra': extra_cap},
                 'retention': {'missing': retain_m, 'split': retain_d, 'junction': retain_j}}
 
 
@@ -137,12 +164,16 @@ def _extra_for_sample(sample, source_path, config):
                     continue
                 image = torch.tensor(arrays['image'], dtype=torch.float32)
                 target = torch.tensor(arrays[target_key], dtype=torch.float32)
-            metric = ExtraInkMetric(target, radius=config.extra_radius, transition=config.extra_transition)
+            metric = ExtraInkMetric(target, radius=config.extra_radius, transition=config.extra_transition,
+                alignment=config.extra_alignment, alignment_step=config.extra_alignment_step,
+                alignment_temperature=config.extra_alignment_temperature, alignment_prior=config.extra_alignment_prior,
+                alignment_sigma=config.extra_alignment_sigma)
             with torch.no_grad():
                 result = metric(image)
             return float(result['extra'][0]), {'image': image.squeeze().numpy(),
                 'extra_map': result['extra_map'][0, 0].numpy(),
-                'support': result['support'][0, 0].numpy()}, f'{path}::{target_key}'
+                'support': result['support'][0, 0].numpy(),
+                'alignment_weights': result['alignment_weights'][0].numpy()}, f'{path}::{target_key}'
     raise ValueError('Cannot assess added ink: keep the NPZ containing image and reference_geometry/reference_strokes. '
                      'Do not treat absent extra measurements as zero; extra_weight=0 explicitly opts out.')
 
@@ -215,11 +246,18 @@ def _score_gallery(samples, scored, destination, source_path, columns, per_page,
                 '<p>빨간색은 기준 허용 영역 밖의 잉크입니다.</p></details>')
         extra_note = (f"추가 잉크 {100*result['extra']:.1f}% · 추가 감점 전 {result['score_before_extra']:.1f}점"
                       if result['extra_assessed'] else '추가 잉크 검사 꺼짐')
+        cap_rows = ''.join(f"<tr><td>{label}</td><td>{result[key+'_score_cap']:.1f}</td></tr>"
+                           for key, label in [('missing', '누락'), ('extra', '추가'),
+                                              ('junction', '정션'), ('split', '분리')])
+        cap_detail = ('<details><summary>오류별 점수 상한 보기</summary><table>'
+                      + cap_rows + '</table><p>복합 오류는 상한보다 더 낮아질 수 있습니다.</p></details>')
+        if not result['priority_mode']:
+            cap_detail = '<p>이전 지수 곱셈 공식: 점수 상한 미적용</p>'
         cards.append(f'<article class="indicator-card">{picture}'
                      f'<div class="indicator-name">{number}. {html.escape(name)}</div>'
                      f'<div class="indicator-score">{result["structural_score"]:.1f}<span> / 100</span></div>'
                      f'<div class="indicator-note">{note if image is not None else "이미지 없는 수치 입력"}</div>'
-                     f'<div class="indicator-note">{extra_note}</div>{extra_detail}'
+                     f'<div class="indicator-note">{extra_note}</div>{extra_detail}{cap_detail}'
                      '<details><summary>획별 점수 보기</summary><table><thead><tr><th>획</th><th>점수</th>'
                      f'<th>누락</th><th>분리</th><th>정션</th></tr></thead><tbody>{detail_rows}</tbody></table></details></article>')
     style = f'''<style>
@@ -276,7 +314,7 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
     """Score an existing structure_report.json/dict without rerunning extraction.
 
     Returns an auditable report and saves glyph_scores.csv, stroke_scores.csv,
-    indicator_report.json. Only the three named error columns enter the formula.
+    indicator_report.json. Uses M/D/J and remeasured extra ink; no filename-based scoring.
     """
     import pandas as pd
 
@@ -308,9 +346,11 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
         identity = {'sample': number, 'csv_row': sample.get('csv_row'),
                     'input': sample.get('input') or sample.get('input_npz') or ''}
         glyph = {**identity, 'structural_score': float(output['score'][0]),
+                 'priority_mode': cfg.priority_mode,
                  'score_before_extra': float(output['base_score'][0]), 'extra': extra,
                  'extra_retention': float(output['extra_retention'][0]),
                  'extra_assessed': extra_source != 'disabled',
+                 **{name+'_score_cap': float(value[0]) for name, value in output['caps'].items()},
                  'mean_stroke_score': float(output['mean_score'][0]),
                  'worst_stroke_score': float(output['worst_score'][0]),
                  'stroke_count': len(strokes)}
@@ -339,7 +379,7 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
     pd.DataFrame(stroke_rows).to_csv(destination / 'stroke_scores.csv', index=False, encoding='utf-8-sig')
     gallery, gallery_images = _score_gallery(report['results'], results, destination, source_path,
                                              images_per_row, images_per_page, show_images)
-    output_report = {'indicator': 'structural_indicator_v2_added_ink', 'range': [0, 100],
+    output_report = {'indicator': 'structural_indicator_v3_priority', 'range': [0, 100],
                      'uses_only': ['missing', 'split', 'junction'] + (['extra'] if cfg.extra_weight > 0 else []), 'trained': False,
                      'calibrated_to_human_quality': False, 'config': asdict(cfg),
                      'measurement_config': report.get('config'), 'source_report': str(source_path) if source_path else None,
