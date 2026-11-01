@@ -4,8 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import matplotlib
+matplotlib.use('Agg')
+import numpy as np
+from PIL import Image
 import torch
-from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicator, score_structure_report
+from stroke_model.structural_indicator import IndicatorConfig, StructuralIndicator, score_structure_report, _image_for_sample
 
 
 class IndicatorTests(unittest.TestCase):
@@ -100,8 +104,8 @@ class IndicatorTests(unittest.TestCase):
         other['results'][0]['strokes'][0].update(width=0, branch_regions_max=0)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            first = score_structure_report(base, save_dir=root/'first')
-            second = score_structure_report(other, save_dir=root/'second')
+            first = score_structure_report(base, save_dir=root/'first', show_images=False)
+            second = score_structure_report(other, save_dir=root/'second', show_images=False)
             self.assertEqual(first['results'][0]['structural_score'], second['results'][0]['structural_score'])
             self.assertEqual(first['uses_only'], ['missing', 'split', 'junction'])
             self.assertFalse(first['trained'])
@@ -109,6 +113,63 @@ class IndicatorTests(unittest.TestCase):
             self.assertTrue((root/'first/stroke_scores.csv').is_file())
             saved = json.loads((root/'first/indicator_report.json').read_text(encoding='utf-8'))
             self.assertEqual(saved['config'], first['config'])
+
+    def test_original_images_are_paired_with_their_own_scores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.new('RGB', (12, 12), (255, 0, 0)).save(root/'first.png')
+            Image.new('RGB', (12, 12), (0, 0, 255)).save(root/'second.png')
+            report = {'results': [{'input': str(root/f'{name}.png'), 'strokes': [
+                {'missing': missing, 'split': 0, 'junction': 0}]} for name, missing in [('first', 0), ('second', .5)]]}
+            result = score_structure_report(report, save_dir=root/'scores', show_images=False)
+            self.assertEqual(result['results'][0]['structural_score'], 100)
+            self.assertAlmostEqual(result['results'][1]['structural_score'], 50)
+            self.assertEqual(Path(result['results'][0]['image_source']).name, 'first.png')
+            self.assertEqual(Path(result['results'][1]['image_source']).name, 'second.png')
+            self.assertTrue(all(r['image_available'] for r in result['results']))
+            gallery = Path(result['gallery_html']).read_text(encoding='utf-8')
+            self.assertEqual(gallery.count('data:image/png;base64,'), 2)
+            self.assertIn('100.0', gallery)
+            self.assertIn('50.0', gallery)
+            self.assertTrue(Path(result['gallery_images'][0]).is_file())
+
+    def test_saved_input_array_fallback_has_correct_ink_polarity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'sample.npz'
+            ink = np.zeros((1, 8, 8), dtype=np.float32)
+            ink[0, 2:6, 3] = 1
+            np.savez_compressed(path, image=ink, reference_strokes=np.ones((1, 8, 8)))
+            image, source, kind = _image_for_sample({'input': 'unavailable.png', 'npz': str(path)}, None)
+            self.assertEqual(kind, 'scored_input_array')
+            self.assertEqual(image.getpixel((3, 3)), (0, 0, 0))
+            self.assertEqual(image.getpixel((0, 0)), (255, 255, 255))
+
+    def test_scored_snapshot_precedes_a_changed_original_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.new('RGB', (8, 8), 'red').save(root/'changed.png')
+            ink = np.zeros((1, 8, 8), dtype=np.float32)
+            np.savez_compressed(root/'snapshot.npz', image=ink)
+            image, _, kind = _image_for_sample({'input': str(root/'changed.png'),
+                                                'npz': str(root/'snapshot.npz')}, None)
+            self.assertEqual(kind, 'scored_input_array')
+            self.assertEqual(image.getpixel((0, 0)), (255, 255, 255))
+
+    def test_reference_array_is_never_presented_as_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'reference_only.npz'
+            np.savez_compressed(path, reference_strokes=np.ones((1, 8, 8)))
+            image, _, kind = _image_for_sample({'npz': str(path)}, None)
+            self.assertIsNone(image)
+            self.assertEqual(kind, 'unavailable')
+
+    def test_report_relative_image_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.new('RGB', (8, 8), 'white').save(root/'input.png')
+            image, source, kind = _image_for_sample({'input': 'input.png'}, root/'structure_report.json')
+            self.assertEqual(kind, 'original_file')
+            self.assertEqual(Path(source), root/'input.png')
 
 
 if __name__ == '__main__':

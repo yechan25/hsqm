@@ -10,6 +10,10 @@ SETTINGS = '''# ===== 점수 설정: 누락·분리·정션 세 값만 사용 ==
 MODE = "auto"
 REPORT_PATH = "/content/drive/Shareddrives/2026 자율연구/HSQM/stroke_zip_runs/20261028_082616_066020/structure_20261101_092625_060835/structure_report.json"
 SAVE_DIR = None  # None = 원래 결과 폴더 아래 indicator_시간. 직접 지정 시 새 폴더
+SHOW_IMAGES = True  # 사진과 점수를 카드로 함께 표시
+IMAGES_PER_ROW = 3
+IMAGES_PER_PAGE = 12  # 저장용 PNG 한 장에 들어갈 사진 수
+SHOW_STROKE_TABLE = False  # 기본은 카드의 '획별 점수 보기'를 눌러 확인
 
 SCORE_CONFIG = dict(
     missing_weight=1.0,   # 누락 중요도. 0이면 이 항 제외
@@ -47,6 +51,8 @@ else:
 
 indicator_results = score_structure_report(
     indicator_source, config=IndicatorConfig(**SCORE_CONFIG), save_dir=SAVE_DIR,
+    show_images=SHOW_IMAGES, images_per_row=IMAGES_PER_ROW,
+    images_per_page=IMAGES_PER_PAGE, show_stroke_table=SHOW_STROKE_TABLE,
 )
 '''
 
@@ -65,14 +71,18 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
         if kind == 'code':
             result.update(execution_count=None, outputs=[])
         return result
-    notebook = {'cells': [cell('markdown', '''# 누락·분리·정션 구조 지표
+    notebook = {'cells': [cell('markdown', '''# 사진 : 누락·분리·정션 구조 점수
 
 설문·추가 학습 없이 이미 계산한 missing/split/junction 세 값만 0~100 지표로 바꿉니다.
 높을수록 세 오류가 적습니다. 사람 선호나 글자 품질에 교정한 점수는 아닙니다.
 
 1. 첫 셀에서 입력과 가중치/변환 크기를 설정합니다.
 2. 모듈 로드 셀과 계산 셀을 실행합니다.
-3. 글자 structural_score와 획별 stroke_score를 확인합니다.
+3. 사진 아래의 **전체 점수**를 비교합니다. 카드의 **획별 점수 보기**를 누르면 세 오류와 획별 점수가 펼쳐집니다.
+
+저장된 NPZ의 실제 평가 입력 배열을 우선 표시하고, 없으면 원본 PNG 경로에서 사진을 읽습니다.
+기준 획 이미지나 진단 몽타주를 원본 대신 표시하지 않습니다. 경로가 없으면 이미지 없음으로 알립니다.
+사진과 점수를 함께 담은 HTML/PNG도 결과 폴더에 저장합니다.
 
 기존 구조 진단 노트북에 추가 셀을 붙이면 structure_results를 바로 재사용합니다.
 이 독립 파일을 새로 열었다면 REPORT_PATH를 결과 JSON 경로로 지정하세요.

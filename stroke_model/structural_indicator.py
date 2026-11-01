@@ -91,7 +91,123 @@ class StructuralIndicator(nn.Module):
                 'retention': {'missing': retain_m, 'split': retain_d, 'junction': retain_j}}
 
 
-def score_structure_report(report, config=None, save_dir=None):
+def _image_for_sample(sample, source_path):
+    """Prefer the scored input snapshot; never substitute a reference/montage."""
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    def candidates(value):
+        if not value:
+            return []
+        path = Path(value)
+        choices = [path]
+        if not path.is_absolute() and source_path:
+            choices.append(source_path.parent/path)
+        return choices
+
+    for key in ('npz', 'input_npz'):
+        for path in candidates(sample.get(key)):
+            if not path.is_file() or path.suffix.lower() != '.npz':
+                continue
+            with np.load(path, allow_pickle=False) as data:
+                if 'image' not in data:
+                    continue
+                ink = np.asarray(data['image'], dtype=np.float32)
+            if ink.ndim == 3 and ink.shape[0] == 1:
+                ink = ink[0]
+            if ink.ndim != 2 or not np.isfinite(ink).all() or (ink < 0).any() or (ink > 1).any():
+                continue
+            # Saved arrays use ink=1. Display black ink on a white background.
+            content = np.rint(255*(1-ink)).astype(np.uint8)
+            return Image.fromarray(content).convert('RGB'), str(path), 'scored_input_array'
+    for path in candidates(sample.get('input')):
+        if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff') and path.is_file():
+            with Image.open(path) as image:
+                return ImageOps.exif_transpose(image).convert('RGB'), str(path), 'original_file'
+    return None, None, 'unavailable'
+
+
+def _score_gallery(samples, scored, destination, source_path, columns, per_page, show):
+    import base64
+    import html
+    import io
+    import unicodedata
+    import matplotlib.pyplot as plt
+
+    cards, loaded, pngs = [], [], []
+    for number, (sample, result) in enumerate(zip(samples, scored), 1):
+        image, path, kind = _image_for_sample(sample, source_path)
+        result.update(image_available=image is not None, image_source=path, image_kind=kind)
+        name = str(sample.get('input') or sample.get('input_npz') or f'Image {number}').replace('\\', '/').rsplit('/', 1)[-1]
+        loaded.append((image, name, result))
+        if image is None:
+            picture = '<div class="indicator-no-image">사진 경로를 찾지 못했습니다</div>'
+        else:
+            buffer = io.BytesIO()
+            image.save(buffer, format='PNG')
+            encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+            picture = f'<img src="data:image/png;base64,{encoded}" alt="{html.escape(name, quote=True)}">'
+        detail_rows = ''.join(f"<tr><td>{html.escape(str(s['stroke']))}</td><td>{s['stroke_score']:.1f}</td>"
+                              f"<td>{s['missing']:.3g}</td><td>{s['split']:.3g}</td><td>{s['junction']:.3g}</td></tr>"
+                              for s in result['strokes'])
+        note = '평가에 사용한 입력 배열' if kind == 'scored_input_array' else '입력 사진'
+        cards.append(f'<article class="indicator-card">{picture}'
+                     f'<div class="indicator-name">{number}. {html.escape(name)}</div>'
+                     f'<div class="indicator-score">{result["structural_score"]:.1f}<span> / 100</span></div>'
+                     f'<div class="indicator-note">{note if image is not None else "이미지 없는 수치 입력"}</div>'
+                     '<details><summary>획별 점수 보기</summary><table><thead><tr><th>획</th><th>점수</th>'
+                     f'<th>누락</th><th>분리</th><th>정션</th></tr></thead><tbody>{detail_rows}</tbody></table></details></article>')
+    style = f'''<style>
+.indicator-gallery {{font-family:system-ui,sans-serif;color:#202124;}}
+.indicator-grid {{display:grid;grid-template-columns:repeat({columns},minmax(0,1fr));gap:16px;}}
+.indicator-card {{border:1px solid #ddd;border-radius:12px;padding:16px;background:white;min-width:0;}}
+.indicator-card img,.indicator-no-image {{width:100%;height:240px;object-fit:contain;background:white;}}
+.indicator-no-image {{display:flex;align-items:center;justify-content:center;color:#777;}}
+.indicator-name {{font-size:14px;overflow-wrap:anywhere;margin:10px 0 4px;}}
+.indicator-score {{font-size:36px;font-weight:700;}} .indicator-score span {{font-size:16px;font-weight:400;color:#666;}}
+.indicator-note {{font-size:12px;color:#666;margin:4px 0 12px;}}
+.indicator-gallery table {{font-size:12px;border-collapse:collapse;width:100%;margin-top:10px;}}
+.indicator-gallery td,.indicator-gallery th {{padding:5px;text-align:right;border-bottom:1px solid #eee;}}
+@media(max-width:650px){{.indicator-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}}}
+</style>'''
+    fragment = style + '<section class="indicator-gallery"><p>사진별 구조 점수 · 높을수록 누락·분리·정션 측정값이 적습니다.</p>'
+    fragment += '<div class="indicator-grid">' + ''.join(cards) + '</div></section>'
+    gallery_path = destination/'images_and_scores.html'
+    gallery_path.write_text('<!doctype html><html lang="ko"><meta charset="utf-8">'+fragment+'</html>', encoding='utf-8')
+    for offset in range(0, len(loaded), per_page):
+        page = loaded[offset:offset+per_page]
+        cols = min(columns, len(page))
+        rows = math.ceil(len(page)/cols)
+        figure, axes = plt.subplots(rows, cols, squeeze=False, figsize=(3.5*cols, 4.2*rows), layout='constrained')
+        for ax in axes.flat:
+            ax.axis('off')
+        for ax, (image, name, result) in zip(axes.flat, page):
+            if image is not None:
+                ax.imshow(image)
+            else:
+                ax.text(.5, .5, 'Image unavailable', transform=ax.transAxes, ha='center', color='#777')
+            safe_name = unicodedata.normalize('NFC', name).encode('ascii', 'backslashreplace').decode('ascii')
+            if len(safe_name) > 58:
+                safe_name = safe_name[:55]+'...'
+            ax.set_title(f'{result["sample"]}. {safe_name}\n{result["structural_score"]:.1f} / 100', fontsize=12)
+        figure.suptitle('Image : structural score (0..100)', fontsize=14)
+        path = destination/f'images_and_scores_{offset//per_page+1:02d}.png'
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        pngs.append(str(path))
+    if show:
+        try:
+            from IPython import get_ipython
+            from IPython.display import HTML, display
+            if get_ipython() is not None:
+                display(HTML(fragment))
+        except ImportError:
+            pass
+    return str(gallery_path), pngs
+
+
+def score_structure_report(report, config=None, save_dir=None, *, show_images=True,
+                           images_per_row=3, images_per_page=12, show_stroke_table=False):
     """Score an existing structure_report.json/dict without rerunning extraction.
 
     Returns an auditable report and saves glyph_scores.csv, stroke_scores.csv,
@@ -99,6 +215,8 @@ def score_structure_report(report, config=None, save_dir=None):
     """
     import pandas as pd
 
+    if any(not isinstance(v, int) or v < 1 for v in (images_per_row, images_per_page)):
+        raise ValueError('Gallery row/page counts must be positive integers')
     cfg = config or IndicatorConfig()
     source_path = None
     if isinstance(report, (str, Path)):
@@ -139,18 +257,23 @@ def score_structure_report(report, config=None, save_dir=None):
         results.append({**glyph, 'strokes': scored_strokes})
     pd.DataFrame(glyph_rows).to_csv(destination / 'glyph_scores.csv', index=False, encoding='utf-8-sig')
     pd.DataFrame(stroke_rows).to_csv(destination / 'stroke_scores.csv', index=False, encoding='utf-8-sig')
+    gallery, gallery_images = _score_gallery(report['results'], results, destination, source_path,
+                                             images_per_row, images_per_page, show_images)
     output_report = {'indicator': 'missing_split_junction_v1', 'range': [0, 100],
                      'uses_only': ['missing', 'split', 'junction'], 'trained': False,
                      'calibrated_to_human_quality': False, 'config': asdict(cfg),
                      'measurement_config': report.get('config'), 'source_report': str(source_path) if source_path else None,
-                     'save_dir': str(destination), 'results': results}
+                     'save_dir': str(destination), 'gallery_html': gallery,
+                     'gallery_images': gallery_images, 'results': results}
     (destination / 'indicator_report.json').write_text(json.dumps(output_report, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Structural indicator (0..100; higher is better; uncalibrated):')
     display = pd.DataFrame(glyph_rows)
     display['input'] = display['input'].map(lambda p: str(p).replace('\\', '/').rsplit('/', 1)[-1])
     print(display.round(2).to_string(index=False))
-    print('\nPer-stroke scores:')
-    print(pd.DataFrame(stroke_rows)[['sample', 'stroke', 'missing', 'split', 'junction', 'stroke_score']]
-          .to_string(index=False, float_format=lambda x: f'{x:.4g}'))
+    if show_stroke_table:
+        print('\nPer-stroke scores:')
+        print(pd.DataFrame(stroke_rows)[['sample', 'stroke', 'missing', 'split', 'junction', 'stroke_score']]
+              .to_string(index=False, float_format=lambda x: f'{x:.4g}'))
+    print('Image : score gallery:', gallery)
     print('Saved:', destination)
     return output_report
