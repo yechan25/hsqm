@@ -24,7 +24,7 @@
 
 ## 획 분리 모델
 
-- 누락·분리·정션 구조 지표: [점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb) — [공식·설정·API](docs/stroke_model/STRUCTURAL_INDICATOR.md). 설문·추가 학습 없이 기존 세 오류값만 0~100 지표로 계산합니다.
+- 누락·분리·정션·추가 잉크 구조 지표: [점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb) — [공식·설정·API](docs/stroke_model/STRUCTURAL_INDICATOR.md). 기존 획 오류와 목표 기준 밖의 추가 잉크를 0~100 지표로 계산하며, 사진·점수와 추가 위치를 함께 표시합니다.
 - 실험용 획 구조 진단: [Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/stroke_structure_v2.ipynb) — [설정·실행·추출기 학습 API](docs/stroke_model/STROKE_STRUCTURE.md), [과정 설명](docs/stroke_model/STROKE_STRUCTURE_PROCESS.md), [기존 Colab에 붙일 추가 셀](notebooks/stroke_structure_v2_cell.py). 추출된 획의 정션·분리와 기준 대비 누락량을 따로 출력합니다. 원본 글자 품질은 판정하지 않으며 설정은 맨 위에 모았습니다.
 - 획 이미지 ZIP 학습: [Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_stroke_zips.ipynb) — GitHub의 최신 V2 코드로 Drive의 4개 ZIP을 로컬에 풀고 CSV를 자동 검색하여 학습.
 - ZIP 학습 검증: [기존 V2 평가 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/test_reference_v2.ipynb) — 최신 ZIP 학습 모델을 자동 선택하고 같은 val 분할과 기존 soft mask 시각화를 재사용.

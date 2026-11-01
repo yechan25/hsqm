@@ -19,7 +19,7 @@ def _destination(save_dir):
 
 
 def _measure(masks, geometry, config, prefix, reference=None, image=None,
-             show=True, caption='', show_details=False):
+             show=True, caption='', show_details=False, target_image=None):
     evaluator = StrokeStructureLoss(geometry, config).to(masks.device)
     with torch.no_grad():
         result = evaluator(masks, return_maps=True)
@@ -48,6 +48,8 @@ def _measure(masks, geometry, config, prefix, reference=None, image=None,
         payload['reference_strokes'] = torch.as_tensor(reference).detach().cpu().numpy()
     if image is not None:
         payload['image'] = torch.as_tensor(image).detach().cpu().numpy()
+    if target_image is not None:
+        payload['reference_image'] = torch.as_tensor(target_image).detach().cpu().numpy()
     for name in ('centerline', 'missing', 'split', 'junction', 'attached'):
         payload[name + '_maps'] = np.stack([m[name][0, 0].cpu().numpy() for m in result['maps']])
     payload['junction_thresholds'] = np.asarray(config.junction_thresholds)
@@ -185,6 +187,8 @@ def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True, show_d
             masks = torch.tensor(data['soft_masks'], dtype=torch.float32)
             reference = torch.tensor(data['reference_strokes'], dtype=torch.float32)
             geometry = torch.tensor(data['reference_geometry'], dtype=torch.float32) if 'reference_geometry' in data else reference
+            target_image = (data['reference_image'].copy() if 'reference_image' in data else
+                            data['reference'].copy() if 'reference' in data else None)
             image = data['image'].copy() if 'image' in data else None
         if masks.ndim == 4 and masks.shape[0] == 1:
             masks = masks[0]
@@ -192,7 +196,7 @@ def score_saved_strokes(npz_paths, config=None, save_dir=None, show=True, show_d
             raise ValueError(f'Expected K,H,W masks in {path}')
         results.append({'input_npz': str(path), **_measure(masks, geometry, config,
             destination / f'sample_{i+1:04d}', reference=reference, image=image,
-            show=show, caption=Path(path).name, show_details=show_details)})
+            show=show, caption=Path(path).name, show_details=show_details, target_image=target_image)})
     report = {'mode': 'saved_npz', 'geometry': 'stored_if_available_else_reference', 'config': asdict(config),
               'source_quality': {'assessed': False}, 'results': results}
     (destination / 'structure_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -246,7 +250,8 @@ def score_structure_csv(checkpoint, csv_path, input_files=None, sample_rows=None
         prepared_geometry = strokes if geometry == 'reference' else output['hints'][0].detach().cpu()
         result = _measure(output['masks'][0], prepared_geometry, config,
             destination / f'row_{number:04d}', reference=strokes, image=image,
-            show=show, caption=f'CSV row {number}: {image_path.name}', show_details=show_details)
+            show=show, caption=f'CSV row {number}: {image_path.name}', show_details=show_details,
+            target_image=reference)
         results.append({'csv_row': number, 'input': str(image_path), **result})
     report = {'mode': 'csv', 'checkpoint': str(checkpoint), 'csv': str(csv_path),
               'geometry': geometry, 'config': asdict(config), 'uses_input_stroke_annotations': False,

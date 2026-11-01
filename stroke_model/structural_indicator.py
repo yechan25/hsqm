@@ -1,4 +1,4 @@
-"""Deterministic structural indicator using ONLY missing, split and junction.
+"""Deterministic structural indicator with explicit added-ink penalty.
 
 No survey, fitted parameters, image embeddings, width or hard branch counts.
 The 0..100 scale is a configurable engineering index, not calibrated quality.
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from .extra_ink import ExtraInkMetric
 
 
 @dataclass(frozen=True)
@@ -21,17 +22,24 @@ class IndicatorConfig:
     split_scale: float = 0.2
     junction_scale: float = 0.01
     worst_stroke_weight: float = 0.5
+    extra_weight: float = 1.0
+    extra_scale: float = 0.05
+    extra_allowance: float = 0.02
+    extra_radius: float = 8.0
+    extra_transition: float = 0.5
     eps: float = 1e-6
 
     def __post_init__(self):
         for name, value in asdict(self).items():
             if not math.isfinite(value):
                 raise ValueError(f'{name} must be finite')
-        if min(self.missing_weight, self.split_weight, self.junction_weight) < 0:
+        if min(self.missing_weight, self.split_weight, self.junction_weight, self.extra_weight) < 0:
             raise ValueError('Weights must be nonnegative')
         if self.split_scale <= 0 or self.junction_scale <= 0 or not 0 < self.eps < 1:
             raise ValueError('Scales must be positive; eps must be in (0,1)')
-        for weight, scale in ((self.split_weight, self.split_scale), (self.junction_weight, self.junction_scale)):
+        if self.extra_scale <= 0 or not 0 <= self.extra_allowance < 1 or self.extra_radius < 0 or self.extra_transition <= 0:
+            raise ValueError('Invalid extra-ink scale, allowance or geometry settings')
+        for weight, scale in ((self.split_weight, self.split_scale), (self.junction_weight, self.junction_scale), (self.extra_weight, self.extra_scale)):
             if not math.isfinite(weight/scale) or weight/scale > torch.finfo(torch.float32).max:
                 raise ValueError('weight/scale must fit a finite float32 coefficient')
         if not 0 <= self.worst_stroke_weight <= 1:
@@ -39,18 +47,19 @@ class IndicatorConfig:
 
 
 class StructuralIndicator(nn.Module):
-    """Map M,D,J to stroke and glyph scores without training.
+    """Map M,D,J and whole-glyph extra ink to scores without training.
 
     Inputs: K or B,K. Missing is in [0,1]; split/junction are nonnegative.
     q_k = 100*(1-M_k)^wM * exp(-wD*D_k/sD-wJ*J_k/sJ)
-    Q = (1-alpha)*mean(q_k) + alpha*min(q_k), over active reference strokes.
+    Q0 = (1-alpha)*mean(q_k) + alpha*min(q_k), over active reference strokes.
+    Q = Q0*exp(-wE*relu(E-extra_allowance)/extra_scale).
     min has subgradients; the full pipeline is not everywhere smooth.
     """
     def __init__(self, config=None):
         super().__init__()
         self.config = config or IndicatorConfig()
 
-    def forward(self, missing, split, junction, active=None):
+    def forward(self, missing, split, junction, active=None, *, extra=None):
         missing = torch.as_tensor(missing)
         if not missing.is_floating_point():
             missing = missing.float()
@@ -85,10 +94,57 @@ class StructuralIndicator(nn.Module):
         stroke_scores = 100 * retain_m * retain_d * retain_j
         mean = (stroke_scores * active).sum(1) / active.sum(1)
         worst = stroke_scores.masked_fill(~active, torch.inf).amin(1)
-        score = (1-cfg.worst_stroke_weight)*mean + cfg.worst_stroke_weight*worst
+        base_score = (1-cfg.worst_stroke_weight)*mean + cfg.worst_stroke_weight*worst
+        if extra is None:
+            if cfg.extra_weight > 0:
+                raise ValueError('Added ink is required: provide extra or explicitly set extra_weight=0')
+            extra = base_score*0
+        extra = torch.as_tensor(extra, device=missing.device, dtype=missing.dtype)
+        if extra.ndim == 0 and len(base_score) == 1:
+            extra = extra[None]
+        if extra.shape != base_score.shape or not bool(torch.isfinite(extra).all()) or bool(((extra < 0) | (extra > 1)).any()):
+            raise ValueError('extra must contain one finite [0,1] fraction per glyph')
+        extra_penalty = torch.relu(extra-cfg.extra_allowance)
+        extra_retention = torch.exp(-(cfg.extra_weight/cfg.extra_scale)*extra_penalty)
+        score = base_score * extra_retention
         return {'score': score, 'stroke_scores': stroke_scores, 'mean_score': mean,
                 'worst_score': worst, 'penalty': 1-score/100, 'active': active,
+                'base_score': base_score, 'extra': extra, 'extra_retention': extra_retention,
                 'retention': {'missing': retain_m, 'split': retain_d, 'junction': retain_j}}
+
+
+def _extra_for_sample(sample, source_path, config):
+    """Old reports are remeasured from snapshots; never assume missing extra=0."""
+    import numpy as np
+    if 'extra' in sample:
+        return float(sample['extra']), None, 'provided_value'
+    if config.extra_weight == 0:
+        return 0., None, 'disabled'
+    for key in ('npz', 'input_npz'):
+        value = sample.get(key)
+        if not value:
+            continue
+        paths = [Path(value)]
+        if source_path and not paths[0].is_absolute():
+            paths.append(source_path.parent/paths[0])
+        for path in paths:
+            if not path.is_file():
+                continue
+            with np.load(path, allow_pickle=False) as arrays:
+                target_key = next((key for key in ('reference_image', 'reference', 'reference_geometry', 'reference_strokes')
+                                   if key in arrays), None)
+                if 'image' not in arrays or target_key not in arrays:
+                    continue
+                image = torch.tensor(arrays['image'], dtype=torch.float32)
+                target = torch.tensor(arrays[target_key], dtype=torch.float32)
+            metric = ExtraInkMetric(target, radius=config.extra_radius, transition=config.extra_transition)
+            with torch.no_grad():
+                result = metric(image)
+            return float(result['extra'][0]), {'image': image.squeeze().numpy(),
+                'extra_map': result['extra_map'][0, 0].numpy(),
+                'support': result['support'][0, 0].numpy()}, f'{path}::{target_key}'
+    raise ValueError('Cannot assess added ink: keep the NPZ containing image and reference_geometry/reference_strokes. '
+                     'Do not treat absent extra measurements as zero; extra_weight=0 explicitly opts out.')
 
 
 def _image_for_sample(sample, source_path):
@@ -151,10 +207,19 @@ def _score_gallery(samples, scored, destination, source_path, columns, per_page,
                               f"<td>{s['missing']:.3g}</td><td>{s['split']:.3g}</td><td>{s['junction']:.3g}</td></tr>"
                               for s in result['strokes'])
         note = '평가에 사용한 입력 배열' if kind == 'scored_input_array' else '입력 사진'
+        extra_detail = ''
+        if result.get('extra_overlay'):
+            encoded = base64.b64encode(Path(result['extra_overlay']).read_bytes()).decode('ascii')
+            extra_detail = ('<details><summary>추가 잉크 위치 보기</summary>'
+                f'<img src="data:image/png;base64,{encoded}" alt="추가 잉크 위치">'
+                '<p>빨간색은 기준 허용 영역 밖의 잉크입니다.</p></details>')
+        extra_note = (f"추가 잉크 {100*result['extra']:.1f}% · 추가 감점 전 {result['score_before_extra']:.1f}점"
+                      if result['extra_assessed'] else '추가 잉크 검사 꺼짐')
         cards.append(f'<article class="indicator-card">{picture}'
                      f'<div class="indicator-name">{number}. {html.escape(name)}</div>'
                      f'<div class="indicator-score">{result["structural_score"]:.1f}<span> / 100</span></div>'
                      f'<div class="indicator-note">{note if image is not None else "이미지 없는 수치 입력"}</div>'
+                     f'<div class="indicator-note">{extra_note}</div>{extra_detail}'
                      '<details><summary>획별 점수 보기</summary><table><thead><tr><th>획</th><th>점수</th>'
                      f'<th>누락</th><th>분리</th><th>정션</th></tr></thead><tbody>{detail_rows}</tbody></table></details></article>')
     style = f'''<style>
@@ -170,7 +235,7 @@ def _score_gallery(samples, scored, destination, source_path, columns, per_page,
 .indicator-gallery td,.indicator-gallery th {{padding:5px;text-align:right;border-bottom:1px solid #eee;}}
 @media(max-width:650px){{.indicator-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}}}
 </style>'''
-    fragment = style + '<section class="indicator-gallery"><p>사진별 구조 점수 · 높을수록 누락·분리·정션 측정값이 적습니다.</p>'
+    fragment = style + '<section class="indicator-gallery"><p>사진별 구조 점수 · 누락·분리·정션·추가 잉크를 감점합니다.</p>'
     fragment += '<div class="indicator-grid">' + ''.join(cards) + '</div></section>'
     gallery_path = destination/'images_and_scores.html'
     gallery_path.write_text('<!doctype html><html lang="ko"><meta charset="utf-8">'+fragment+'</html>', encoding='utf-8')
@@ -237,11 +302,15 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
             raise ValueError(f'Sample {number} has no per-stroke measurements')
         missing, split, junction = [torch.tensor([s[key] for s in strokes], dtype=torch.float64)
                                      for key in ('missing', 'split', 'junction')]
+        extra, extra_maps, extra_source = _extra_for_sample(sample, source_path, cfg)
         with torch.no_grad():
-            output = scorer(missing, split, junction)
+            output = scorer(missing, split, junction, extra=[extra])
         identity = {'sample': number, 'csv_row': sample.get('csv_row'),
                     'input': sample.get('input') or sample.get('input_npz') or ''}
         glyph = {**identity, 'structural_score': float(output['score'][0]),
+                 'score_before_extra': float(output['base_score'][0]), 'extra': extra,
+                 'extra_retention': float(output['extra_retention'][0]),
+                 'extra_assessed': extra_source != 'disabled',
                  'mean_stroke_score': float(output['mean_score'][0]),
                  'worst_stroke_score': float(output['worst_score'][0]),
                  'stroke_count': len(strokes)}
@@ -254,13 +323,24 @@ def score_structure_report(report, config=None, save_dir=None, *, show_images=Tr
                    **{name+'_retention': float(value[0, k]) for name, value in output['retention'].items()}}
             stroke_rows.append(row)
             scored_strokes.append(row)
-        results.append({**glyph, 'strokes': scored_strokes})
+        extra_overlay = None
+        if extra_maps is not None:
+            import numpy as np
+            from PIL import Image
+            np.savez_compressed(destination/f'extra_{number:04d}.npz', **extra_maps)
+            background = np.repeat((1-extra_maps['image'])[..., None], 3, axis=-1)
+            alpha = np.clip(extra_maps['extra_map'], 0, 1)[..., None]
+            colored = background*(1-alpha) + np.array([1., 0., 0.])*alpha
+            extra_overlay = destination/f'extra_{number:04d}.png'
+            Image.fromarray(np.rint(colored*255).astype(np.uint8)).save(extra_overlay)
+        results.append({**glyph, 'extra_source': extra_source,
+                        'extra_overlay': str(extra_overlay) if extra_overlay else None, 'strokes': scored_strokes})
     pd.DataFrame(glyph_rows).to_csv(destination / 'glyph_scores.csv', index=False, encoding='utf-8-sig')
     pd.DataFrame(stroke_rows).to_csv(destination / 'stroke_scores.csv', index=False, encoding='utf-8-sig')
     gallery, gallery_images = _score_gallery(report['results'], results, destination, source_path,
                                              images_per_row, images_per_page, show_images)
-    output_report = {'indicator': 'missing_split_junction_v1', 'range': [0, 100],
-                     'uses_only': ['missing', 'split', 'junction'], 'trained': False,
+    output_report = {'indicator': 'structural_indicator_v2_added_ink', 'range': [0, 100],
+                     'uses_only': ['missing', 'split', 'junction'] + (['extra'] if cfg.extra_weight > 0 else []), 'trained': False,
                      'calibrated_to_human_quality': False, 'config': asdict(cfg),
                      'measurement_config': report.get('config'), 'source_report': str(source_path) if source_path else None,
                      'save_dir': str(destination), 'gallery_html': gallery,

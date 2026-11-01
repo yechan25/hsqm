@@ -316,6 +316,9 @@ class StructureTests(unittest.TestCase):
             self.assertFalse(report['uses_input_stroke_annotations'])
             self.assertEqual(report['results'][0]['csv_row'], 1)
             self.assertGreater(report['results'][0]['strokes'][0]['split'], .05)
+            with np.load(report['results'][0]['npz'], allow_pickle=False) as snapshot:
+                self.assertIn('reference_image', snapshot)
+                self.assertEqual(snapshot['reference_image'].shape, (1, 64, 64))
 
 
 if __name__ == '__main__':

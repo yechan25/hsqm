@@ -1,10 +1,10 @@
-"""Build a standalone M/D/J scoring notebook and a pasteable scoring cell."""
+"""Build a standalone M/D/J/extra scoring notebook and pasteable cell."""
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SETTINGS = '''# ===== 점수 설정: 누락·분리·정션 세 값만 사용 =====
+SETTINGS = '''# ===== 점수 설정: 누락·분리·정션 + 추가 잉크 =====
 # auto: 현재 structure_results가 있으면 재사용, 없으면 REPORT_PATH 읽기
 # values: 아래 VALUES의 숫자만으로 바로 계산
 MODE = "auto"
@@ -22,6 +22,11 @@ SCORE_CONFIG = dict(
     split_scale=0.2,      # 분리값이 이 크기일 때 이 항의 유지율은 exp(-1)
     junction_scale=0.01,  # 정션값이 이 크기일 때 이 항의 유지율은 exp(-1)
     worst_stroke_weight=0.5, # 글자 점수: 획 평균과 최악 획 점수의 혼합. 0=평균, 1=최악
+    extra_weight=1.0,     # 추가 잉크 감점. 0은 명시적으로 추가 검사를 끄는 설정
+    extra_scale=0.05,     # 허용량을 넘은 추가 잉크 5%에서 유지율 exp(-1)
+    extra_allowance=0.02, # 작은 잉크 잔상/정렬 변동 허용 비율
+    extra_radius=8.0,     # 목표 기준 중심선 주변의 허용 반경 (128 해상도 픽셀)
+    extra_transition=0.5, # 허용 영역 경계의 부드러운 전이 폭
     eps=1e-6,
 )
 
@@ -30,13 +35,14 @@ VALUES = [
     dict(stroke=1, missing=0.0, split=0.0, junction=0.0),
     dict(stroke=2, missing=0.809, split=0.0, junction=0.0),
 ]
+EXTRA_VALUE = 0.0  # MODE="values": 글자 전체의 추가 잉크 비율을 직접 지정
 '''
 
 RUN = '''from _structural_indicator_runtime import IndicatorConfig, score_structure_report
 from pathlib import Path
 
 if MODE == "values":
-    indicator_source = {"results": [{"input": "manual_values", "strokes": VALUES}]}
+    indicator_source = {"results": [{"input": "manual_values", "strokes": VALUES, "extra": EXTRA_VALUE}]}
 elif MODE == "auto":
     indicator_source = globals().get("structure_results")
     if indicator_source is None:
@@ -59,8 +65,14 @@ indicator_results = score_structure_report(
 
 def build():
     source = (ROOT/'stroke_model/structural_indicator.py').read_text(encoding='utf-8-sig')
+    extra_source = (ROOT/'stroke_model/extra_ink.py').read_text(encoding='utf-8-sig')
+    source = source.replace('from .extra_ink import ExtraInkMetric', 'from _extra_ink_runtime import ExtraInkMetric')
     loader = '''# 점수 모듈 내장: 추가 모델·가중치 다운로드 없이 실행
 import sys, types
+_extra_module = types.ModuleType("_extra_ink_runtime")
+_extra_module.__file__ = "<embedded:extra_ink>"
+sys.modules[_extra_module.__name__] = _extra_module
+exec(compile(''' + repr(extra_source) + ''', _extra_module.__file__, "exec"), _extra_module.__dict__)
 _score_module = types.ModuleType("_structural_indicator_runtime")
 _score_module.__file__ = "<embedded:structural_indicator>"
 sys.modules[_score_module.__name__] = _score_module
@@ -71,10 +83,10 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
         if kind == 'code':
             result.update(execution_count=None, outputs=[])
         return result
-    notebook = {'cells': [cell('markdown', '''# 사진 : 누락·분리·정션 구조 점수
+    notebook = {'cells': [cell('markdown', '''# 사진 : 누락·분리·정션·추가 잉크 구조 점수
 
-설문·추가 학습 없이 이미 계산한 missing/split/junction 세 값만 0~100 지표로 바꿉니다.
-높을수록 세 오류가 적습니다. 사람 선호나 글자 품질에 교정한 점수는 아닙니다.
+설문·추가 학습 없이 누락/분리/정션과 **기준으로 설명되지 않는 추가 잉크**를 감점합니다.
+높을수록 측정 오류가 적습니다. 사람 선호나 글자 품질에 교정한 점수는 아닙니다.
 
 1. 첫 셀에서 입력과 가중치/변환 크기를 설정합니다.
 2. 모듈 로드 셀과 계산 셀을 실행합니다.
@@ -90,10 +102,13 @@ MODE="values"는 숫자만 입력하는 테스트입니다. 기존 추출 모델
 
 획 점수 = 100 × (1-M)^wM × exp(-wD·D/sD-wJ·J/sJ)
 
-글자 점수 = (1-최악획비중) × 획 평균 + 최악획비중 × 최저 획 점수
+글자 기본점수 = (1-최악획비중) × 획 평균 + 최악획비중 × 최저 획 점수
+최종 점수 = 기본점수 × exp(-추가가중치 × max(추가비율-허용량,0)/추가scale)
 
 기본값에서 누락 1인 획은 0점, 세 오류가 0인 획은 100점입니다.
-정션 측정의 불확실성은 점수에도 전달됩니다. 노란 후보 수·파임·설문값은 공식에 넣지 않습니다.
+각 카드의 '추가 잉크 위치 보기'에서 빨간 영역을 확인하세요. 추가는 획 배정과 무관하게 입력 전체에서 측정합니다.
+기준과 입력의 정렬이 어긋나면 추가를 과검출할 수 있습니다. 반경과 허용량은 정상 자료에서 교정해야 합니다.
+오래된 JSON도 NPZ의 image/reference_geometry가 있으면 추가를 재측정합니다. 없으면 0으로 가정하지 않고 오류를 냅니다.
 '''), cell('code', SETTINGS), cell('code', loader), cell('code', RUN)],
         'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},
                      'colab': {'name': 'structural_indicator.ipynb'}}, 'nbformat': 4, 'nbformat_minor': 5}
