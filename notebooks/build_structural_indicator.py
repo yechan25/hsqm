@@ -6,8 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SETTINGS = '''# ===== 점수 설정: 누락·분리·정션 + 추가 잉크 =====
 # auto: 현재 structure_results가 있으면 재사용, 없으면 REPORT_PATH 읽기
+# csv: 테스트 CSV에서 다른 PNG 선택 → 획 추론 → 사진과 점수
 # values: 아래 VALUES의 숫자만으로 바로 계산
 MODE = "auto"
+CHECKPOINT = "/content/drive/Shareddrives/2026 자율연구/HSQM/stroke_zip_runs/20261028_082616_066020/best.pt"
+CSV_PATH = "/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/test_dataset/paths.csv"
+INPUT_FILES = None  # 예: ["실제파일명.png", "다른파일명.png"]. None이면 무작위 선택
+SAMPLE_COUNT = 12  # INPUT_FILES=None일 때 선택 장수. None = 전체 CSV
+RANDOM_SEED = 42  # 숫자를 바꾸면 다른 표본. 같은 숫자는 같은 CSV 행 선택
+DATASET_ROOT = None  # CSV 기준 경로로 이미지를 못 찾을 때 데이터 상위 폴더
+STRUCTURE_CONFIG = {}  # 구조 측정 기본값 사용. 필요한 항목만 덮어쓰기
 REPORT_PATH = "/content/drive/Shareddrives/2026 자율연구/HSQM/stroke_zip_runs/20261028_082616_066020/structure_20261101_092625_060835/structure_report.json"
 SAVE_DIR = None  # None = 원래 결과 폴더 아래 indicator_시간. 직접 지정 시 새 폴더
 SHOW_IMAGES = True  # 사진과 점수를 카드로 함께 표시
@@ -49,7 +57,36 @@ EXTRA_VALUE = 0.0  # MODE="values": 글자 전체의 추가 잉크 비율을 직
 RUN = '''from _structural_indicator_runtime import IndicatorConfig, score_structure_report
 from pathlib import Path
 
-if MODE == "values":
+if MODE == "csv":
+    import random
+    import pandas as pd
+    from stroke_model.convert_reference_csv import existing_path
+    from stroke_model.infer_reference import inference_columns, select_input_files
+    from stroke_model.stroke_structure import StructureConfig
+    from stroke_model.score_stroke_structure import score_structure_csv
+    csv_path = existing_path(CSV_PATH)
+    frame = pd.read_csv(csv_path)
+    columns = inference_columns(frame)
+    if INPUT_FILES is not None:
+        selected_rows = select_input_files(frame, columns['image'], INPUT_FILES)
+    else:
+        if SAMPLE_COUNT is not None and (not isinstance(SAMPLE_COUNT, int) or SAMPLE_COUNT < 1):
+            raise ValueError("SAMPLE_COUNT는 양의 정수 또는 None이어야 합니다.")
+        candidates = list(range(1, len(frame)+1))
+        selected_rows = (candidates if SAMPLE_COUNT is None else
+                         sorted(random.Random(RANDOM_SEED).sample(candidates, min(SAMPLE_COUNT, len(candidates)))))
+    if not selected_rows:
+        raise ValueError("선택한 이미지가 없습니다. CSV와 INPUT_FILES를 확인하세요.")
+    print("평가할 테스트 이미지:")
+    print(pd.DataFrame({'csv_row': selected_rows,
+        'input': [frame.iloc[i-1][columns['image']] for i in selected_rows]}).to_string(index=False))
+    # CSV 모드는 이전 structure_results와 무관하게 이번에 선택한 사진을 추론합니다.
+    structure_results = score_structure_csv(
+        CHECKPOINT, csv_path, sample_rows=selected_rows, dataset_root=DATASET_ROOT,
+        config=StructureConfig(**STRUCTURE_CONFIG), geometry="reference", show=False,
+    )
+    indicator_source = structure_results
+elif MODE == "values":
     indicator_source = {"results": [{"input": "manual_values", "strokes": VALUES, "extra": EXTRA_VALUE}]}
 elif MODE == "auto":
     indicator_source = globals().get("structure_results")
@@ -61,7 +98,7 @@ elif MODE == "auto":
             drive.mount("/content/drive")
         indicator_source = Path(REPORT_PATH)
 else:
-    raise ValueError('MODE는 "auto" 또는 "values"여야 합니다.')
+    raise ValueError('MODE는 "csv", "auto", "values"여야 합니다.')
 
 indicator_results = score_structure_report(
     indicator_source, config=IndicatorConfig(**SCORE_CONFIG), save_dir=SAVE_DIR,
@@ -72,6 +109,23 @@ indicator_results = score_structure_report(
 
 
 def build():
+    import runpy
+    from textwrap import indent
+    diagnostic_setup = runpy.run_path(str(ROOT/'notebooks/build_stroke_structure.py'))['SETUP']
+    csv_setup = '# CSV 모드에서만 모델 실행 환경 준비. auto/values는 다운로드하지 않습니다.\nif MODE == "csv":\n'
+    csv_setup += indent(diagnostic_setup, '    ')
+    csv_setup += '    from google.colab import drive\n    drive.mount("/content/drive")\n'
+    sources = {f'stroke_model.{name}': (ROOT/'stroke_model'/f'{name}.py').read_text(encoding='utf-8-sig')
+               for name in ('infer_reference', 'stroke_structure', 'junction_diagnostics', 'score_stroke_structure')}
+    csv_setup += '    _indicator_sources = ' + repr(sources) + '\n'
+    csv_setup += '''    import types
+    for _name, _source in _indicator_sources.items():
+        _module = types.ModuleType(_name)
+        _module.__package__ = "stroke_model"
+        _module.__file__ = "<embedded:" + _name + ">"
+        sys.modules[_name] = _module
+        exec(compile(_source, _module.__file__, "exec"), _module.__dict__)
+'''
     source = (ROOT/'stroke_model/structural_indicator.py').read_text(encoding='utf-8-sig')
     extra_source = (ROOT/'stroke_model/extra_ink.py').read_text(encoding='utf-8-sig')
     source = source.replace('from .extra_ink import ExtraInkMetric', 'from _extra_ink_runtime import ExtraInkMetric')
@@ -96,8 +150,9 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
 설문·추가 학습 없이 누락/분리/정션과 **기준으로 설명되지 않는 추가 잉크**를 감점합니다.
 높을수록 측정 오류가 적습니다. 사람 선호나 글자 품질에 교정한 점수는 아닙니다.
 
-1. 첫 셀에서 입력과 가중치/변환 크기를 설정합니다.
-2. 모듈 로드 셀과 계산 셀을 실행합니다.
+1. 기본 csv 모드는 테스트 CSV에서 12장을 무작위로 골라 새로 평가합니다.
+2. RANDOM_SEED를 바꾸면 다른 사진을 봅니다. INPUT_FILES에 실제 PNG 파일명 목록을 넣으면 그 사진만 평가합니다.
+3. 첫 셀 → 모델 준비 → 점수 모듈 로드 → 계산 순서로 실행합니다.
 3. 사진 아래의 **전체 점수**를 비교합니다. 카드의 **획별 점수 보기**를 누르면 세 오류와 획별 점수가 펼쳐집니다.
 
 저장된 NPZ의 실제 평가 입력 배열을 우선 표시하고, 없으면 원본 PNG 경로에서 사진을 읽습니다.
@@ -105,7 +160,8 @@ exec(compile(''' + repr(source) + ''', _score_module.__file__, "exec"), _score_m
 사진과 점수를 함께 담은 HTML/PNG도 결과 폴더에 저장합니다.
 
 기존 구조 진단 노트북에 추가 셀을 붙이면 structure_results를 바로 재사용합니다.
-이 독립 파일을 새로 열었다면 REPORT_PATH를 결과 JSON 경로로 지정하세요.
+기존 결과만 재계산하려면 MODE="auto"와 REPORT_PATH를 사용하세요.
+csv 모드는 입력 사진, 목표 기준 이미지와 기준 획이 CSV에 있어야 하며 입력 획 정답 주석은 사용하지 않습니다.
 MODE="values"는 숫자만 입력하는 테스트입니다. 기존 추출 모델을 재실행하지 않습니다.
 
 기본 모드는 **획 추가·삭제를 강하게, 정션을 중간, 분리를 약하게** 감점하는 평가 규칙입니다.
@@ -122,13 +178,14 @@ MODE="values"는 숫자만 입력하는 테스트입니다. 기존 추출 모델
 기준 위치는 제한된 범위에서 부드럽게 정렬합니다. 큰 변형이나 정렬 실패는 추가로 오검출할 수 있습니다.
 반경과 허용량은 정상 자료에서 교정해야 합니다. 이름별로 점수나 오류 순서를 강제하지 않습니다.
 오래된 JSON도 NPZ의 image/reference_geometry가 있으면 추가를 재측정합니다. 없으면 0으로 가정하지 않고 오류를 냅니다.
-'''), cell('code', SETTINGS), cell('code', loader), cell('code', RUN)],
+'''), cell('code', SETTINGS.replace('MODE = "auto"', 'MODE = "csv"', 1)),
+        cell('code', csv_setup), cell('code', loader), cell('code', RUN)],
         'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},
                      'colab': {'name': 'structural_indicator.ipynb'}}, 'nbformat': 4, 'nbformat_minor': 5}
     path = ROOT/'notebooks/structural_indicator.ipynb'
     path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1)+'\n', encoding='utf-8')
     one = ROOT/'notebooks/structural_indicator_cell.py'
-    one.write_text(SETTINGS+'\n'+loader+'\n'+RUN, encoding='utf-8')
+    one.write_text(SETTINGS+'\n'+csv_setup+'\n'+loader+'\n'+RUN, encoding='utf-8')
     for item in notebook['cells']:
         if item['cell_type'] == 'code':
             compile(''.join(item['source']), str(path), 'exec')

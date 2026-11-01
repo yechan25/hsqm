@@ -4,6 +4,18 @@
 
 [점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb)을 열거나 [추가 셀](../../notebooks/structural_indicator_cell.py)을 기존 구조 진단 뒤에 붙인다. `structure_results`를 재사용하거나 첫 셀 `REPORT_PATH`에 기존 `structure_report.json`을 지정한다. 저장된 NPZ가 있으면 추출기 재추론 없이 추가 잉크를 재측정한다. `MODE="values"`는 `VALUES`와 글자 전체 `EXTRA_VALUE`를 직접 넣는 수치 테스트다.
 
+## 다른 이미지 평가
+
+독립 점수 Colab의 기본값은 `MODE="csv"`다. 첫 설정 셀부터 순서대로 실행하면 `dataset/test_dataset/paths.csv`에서 12장을 선택해 기존 체크포인트로 추론한 뒤 **각 입력 사진과 점수**를 표시한다. 이 모드는 이전 `structure_results`에 들어 있던 사진을 재사용하지 않는다. 새 학습은 하지 않는다.
+
+- 다른 무작위 표본: `RANDOM_SEED`를 다른 정수로 변경한다. 같은 CSV와 seed는 같은 행을 고른다.
+- 장수 변경: `SAMPLE_COUNT=12`를 원하는 수로 변경한다.
+- 파일명 지정: `INPUT_FILES=["실제파일명.png", "다른파일명.png"]`. 이 경우 표본 장수와 seed는 무시한다.
+- 전체 평가: `INPUT_FILES=None`, `SAMPLE_COUNT=None`. 전체 데이터는 시간이 걸릴 수 있다.
+- 기존 결과 재계산: `MODE="auto"`와 `REPORT_PATH` 사용. 붙여넣는 추가 셀은 기존처럼 auto가 기본이다.
+
+선택한 CSV 행과 파일명을 먼저 출력한다. CSV에는 입력 이미지와 목표 기준 이미지·기준 획 경로가 필요하다. 입력 획 정답 주석은 사용하지 않는다. 점수 공식과 기본 감점 설정은 그대로 유지한다.
+
 ## 추가 획을 놓치던 이유와 수정
 
 기존 지표는 목표 글자의 획마다 누락 M, 분리 D, 정션 J를 계산했다. 목표에 없는 획에는 평가 채널이 없으므로, 목표 아를 야로 쓴 경우 남는 가로획이 점수에서 빠질 수 있었다. 모든 픽셀을 기존 획에 배정하는 모델에서는 미배정 잉크만 세는 방식도 충분하지 않다.
