@@ -19,6 +19,8 @@ class PriorityTests(unittest.TestCase):
         self.assertLess(max(scores[:2]), scores[2])
         self.assertLess(scores[2], scores[3])
         self.assertLess(scores[3], scores[4])
+        self.assertGreaterEqual(scores[3], 60)
+        self.assertLessEqual(scores[3], 70)
 
     def test_missing_stroke_cannot_be_diluted_by_many_good_strokes(self):
         metric = StructuralIndicator()
@@ -35,7 +37,7 @@ class PriorityTests(unittest.TestCase):
         metric = StructuralIndicator()
         values = torch.tensor([[0.], [.1], [1.], [1e38]])
         zero = torch.zeros_like(values)
-        for index, floor in ((1, 70), (2, 35)):
+        for index, floor in ((1, 40), (2, 35)):
             args = [zero, zero, zero]
             args[index] = values
             scores = metric(*args, extra=torch.zeros(4))['score']

@@ -23,7 +23,7 @@ class IndicatorConfig:
     junction_scale: float = 0.01
     worst_stroke_weight: float = 0.5
     priority_mode: bool = True
-    split_max_penalty: float = 0.30
+    split_max_penalty: float = 0.60
     junction_max_penalty: float = 0.65
     extra_weight: float = 1.0
     extra_scale: float = 0.025
