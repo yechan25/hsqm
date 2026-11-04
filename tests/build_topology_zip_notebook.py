@@ -37,7 +37,9 @@ TAR.GZ/TGZ/TAR.BZ2/TAR.XZ도 지원합니다. 기존 네 ZIP 형식도 지원합
 `path (1).csv`가 있으면 우선 사용하고, 없으면 `path.csv`/`paths.csv`를 검색합니다.
 입력=input, 기준=target, 정답=input_stroke, 기준 획=target_stroke입니다.
 얇은 정답은 기존 V2처럼 주석된 픽셀만 CE/Dice로 감독합니다. 그 밖의 원본 잉크를 배경으로 벌주지 않습니다.
-실제 정답 획 마스크는 정션 보조 손실에만 사용합니다. CSV는 완전한 실제 획 경로를 제공한다고 가정합니다.
+실제 정답 획 마스크는 정션 감독과 선택적 약한 영역 주석 생성에 사용합니다. CSV는 완전한 실제 획 경로를 제공한다고 가정합니다.
+선택적으로 실제 입력 정답선에서 보수적으로 확장한 약한 영역 주석과 이웃 일관성 손실을 사용합니다.
+이는 완전한 정답이 아니며 교차점/모호한 경계/seed 없는 잉크는 감독하지 않습니다.
 기준 획이 비어 있는 샘플은 전체 행을 제외하고 계속 진행하며 `skipped_samples.csv`에 기록합니다.
 기준/정답 획 순서와 극성은 2번 셀에서 확인하세요.
 
@@ -107,10 +109,16 @@ import shutil
 EPOCHS = 30
 BATCH_SIZE = 8  # 기존 V2와 동일. 메모리 부족 시 4 또는 2
 LEARNING_RATE = 2e-4
-INIT_CHECKPOINT = None  # 선택: 같은 해상도/폭의 기존 reference_v2 best.pt
-JUNCTION_WEIGHT = 0.05  # 0이면 기존 V2와 같은 모델/기본 손실만 사용
+INIT_CHECKPOINT = None  # 선택: 같은 해상도/폭의 V2 또는 현재 V2+정션 best.pt. 비교 실험은 같은 파일로 초기화.
+JUNCTION_WEIGHT = 0.05  # 모든 보조 가중치를 0으로 하면 기존 V2 기본 손실
 JUNCTION_EVERY = 4  # 4배치마다 정션 항 계산
 JUNCTION_MAX_STROKES = 4  # 적용 배치마다 전체 획 중 최대 4개를 순환 선택
+OWNERSHIP_WEIGHT = 0.0  # 실험: 0.1. 먼저 아래 약한 주석 미리보기를 확인하세요.
+AFFINITY_WEIGHT = 0.0  # 실험: 0.02. 소유 획이 명확한 이웃만 일관성 감독.
+EPOCH_WARNING_SECONDS = 33  # 현재 약 30s 대비 비교 예산. 초과 시 경고하며 자동 중단하지 않음.
+if OWNERSHIP_WEIGHT or AFFINITY_WEIGHT:
+    from stroke_model.ownership_refinement import preview_ownership_samples
+    preview_ownership_samples(manifest, count=3)
 output = data_root.parents[1]/'v2_topology_runs'/datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d_%H%M%S_%f')
 output.mkdir(parents=True, exist_ok=False)
 for name in ('conversion_report.json', 'selected_paths.csv', 'skipped_samples.csv', '.complete.json'):
@@ -121,7 +129,9 @@ cmd = [sys.executable, '-u', '-m', 'stroke_model.train_reference',
        '--batch-size', str(BATCH_SIZE), '--lr', str(LEARNING_RATE), '--image-size', str(IMAGE_SIZE),
        '--seed', str(SEED), '--num-workers', '2',
        '--junction-weight', str(JUNCTION_WEIGHT), '--junction-every', str(JUNCTION_EVERY),
-       '--junction-max-strokes', str(JUNCTION_MAX_STROKES)]
+       '--junction-max-strokes', str(JUNCTION_MAX_STROKES),
+       '--ownership-weight', str(OWNERSHIP_WEIGHT), '--affinity-weight', str(AFFINITY_WEIGHT),
+       '--epoch-warning-seconds', str(EPOCH_WARNING_SECONDS)]
 if INIT_CHECKPOINT:
     local_checkpoint = root/'v2_initializer.pt'
     shutil.copyfile(INIT_CHECKPOINT, local_checkpoint)

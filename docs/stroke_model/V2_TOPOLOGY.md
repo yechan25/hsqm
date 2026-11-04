@@ -1,5 +1,9 @@
 # Topo 수정: 기존 V2 유지 + 정션 보조 감독
 
+작은 획의 파임/다중 조각 배정을 위한 선택적 학습 실험은
+[영역 소유 감독과 이웃 일관성](OWNERSHIP_REFINEMENT.md)을 참고한다.
+신경망 구조/추론은 동일하며 추가 가중치는 기본 0이다.
+
 현재 학습 노트북 `notebooks/train_topology_zips.ipynb`는 기존 `ReferenceStrokeModel`과
 `train_reference` 경로를 사용한다. 새 학습 아키텍처 식별자는 `reference_v2_topology_loss_v1`이다.
 모델의 계산 그래프와 state_dict는 기존 V2와 동일하다. 학습 목표가 다름을 구분하기 위해

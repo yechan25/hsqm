@@ -122,6 +122,9 @@ def main():
     p.add_argument('--junction-weight', type=float, default=0., help='0: original V2; positive: same V2 plus junction loss')
     p.add_argument('--junction-every', type=int, default=4)
     p.add_argument('--junction-max-strokes', type=int, default=4)
+    p.add_argument('--ownership-weight', type=float, default=0., help='Optional cached weak-region CE; 0 disables')
+    p.add_argument('--affinity-weight', type=float, default=0., help='Optional same-owner neighbour consistency')
+    p.add_argument('--epoch-warning-seconds', type=float, default=None)
     p.add_argument('--init-checkpoint', default=None, help='Compatible V2 weights; starts a new optimizer/run')
     args = p.parse_args()
     from dataclasses import asdict
@@ -130,6 +133,11 @@ def main():
     junction_config = JunctionConfig(weight=args.junction_weight, every=args.junction_every,
                                      max_strokes=args.junction_max_strokes)
     topology_enabled = args.junction_weight > 0
+    refinement_enabled = args.ownership_weight > 0 or args.affinity_weight > 0
+    if any(not np.isfinite(v) or v < 0 for v in (args.ownership_weight,args.affinity_weight)):
+        raise ValueError('Refinement weights must be finite and nonnegative')
+    if args.epoch_warning_seconds is not None and args.epoch_warning_seconds <= 0:
+        raise ValueError('epoch warning budget must be positive')
     if args.lr <= 0 or args.epochs < 1 or args.batch_size < 1 or args.num_workers < 0:
         raise ValueError('Invalid training settings')
     torch.manual_seed(args.seed)
@@ -138,6 +146,11 @@ def main():
     if args.local_cache:
         from .local_reference_data import stage_manifest
         args.manifest = str(stage_manifest(args.manifest, args.local_cache))
+    if refinement_enabled:
+        from .ownership_refinement import (OwnershipConfig, prepare_ownership_manifest,
+                                          OwnershipDataset, collate_ownership, ownership_losses)
+        ownership_config=OwnershipConfig()
+        args.manifest=str(prepare_ownership_manifest(args.manifest,ownership_config))
     amp = device.type == 'cuda' and not args.no_amp
     amp_dtype = torch.bfloat16 if amp and torch.cuda.is_bf16_supported() else torch.float16
     if device.type == 'cuda':
@@ -148,12 +161,13 @@ def main():
     loaders = {}
     for split in ('train', 'val'):
         auxiliary = topology_enabled and split == 'train'
-        dataset_type = TopologyDataset if auxiliary else StrokeDataset
+        refinement = refinement_enabled and split == 'train'
+        dataset_type = OwnershipDataset if refinement else TopologyDataset if auxiliary else StrokeDataset
         dataset = dataset_type([r for r in rows if r['split'] == split], args.image_size)
         if not len(dataset):
             raise ValueError('Missing split: ' + split)
         loaders[split] = DataLoader(dataset, batch_size=args.batch_size,
-                                   shuffle=split == 'train', collate_fn=collate_topology if auxiliary else collate,
+                                   shuffle=split == 'train', collate_fn=collate_ownership if refinement else collate_topology if auxiliary else collate,
                                    num_workers=args.num_workers, pin_memory=device.type == 'cuda',
                                    persistent_workers=args.num_workers > 0)
         print(f'{split}: {len(dataset)} samples, {len(loaders[split])} batches', flush=True)
@@ -169,9 +183,14 @@ def main():
     scaler = torch.amp.GradScaler('cuda', enabled=amp and amp_dtype == torch.float16)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
-    architecture = ARCHITECTURE if topology_enabled else 'reference_v2'
+    if refinement_enabled:
+        import shutil
+        shutil.copyfile(Path(args.manifest).parent/'preparation_report.json',
+                        destination/'ownership_preparation_report.json')
+    architecture = ARCHITECTURE if topology_enabled or refinement_enabled else 'reference_v2'
     (destination / 'run_config.json').write_text(json.dumps({**vars(args), 'architecture': architecture,
-        'junction_config': asdict(junction_config)}, ensure_ascii=False, indent=2), encoding='utf-8')
+        'junction_config': asdict(junction_config),
+        'ownership_config': asdict(ownership_config) if refinement_enabled else None}, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Architecture:', architecture, '/ junction:', asdict(junction_config), flush=True)
     best, history = -1., []
     global_step = 0
@@ -184,6 +203,7 @@ def main():
         junction_seconds = 0.
         junction_total = 0.
         junction_applications = 0
+        ownership_total=0.;affinity_total=0.;batch_count=0
         progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}', mininterval=5)
         for batch in progress:
             data_seconds += time.perf_counter() - previous
@@ -204,6 +224,14 @@ def main():
                     loss = losses['loss']
                 else:
                     loss = partition_loss(output, labels)['loss']
+                if refinement_enabled:
+                    owners,reliability=[x.to(device,non_blocking=True) for x in batch[6:8]]
+                    refined=ownership_losses(output,owners,reliability,
+                        compute_ownership=args.ownership_weight>0,compute_affinity=args.affinity_weight>0)
+                    loss=loss+args.ownership_weight*refined['ownership']+args.affinity_weight*refined['affinity']
+                    ownership_total=ownership_total+refined['ownership'].detach()
+                    affinity_total=affinity_total+refined['affinity'].detach()
+                batch_count+=1
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
@@ -222,15 +250,22 @@ def main():
                'samples_per_second': len(loaders['train'].dataset) / train_seconds,
                'learning_rate': args.lr, 'junction_mean_when_applied': junction_total/max(junction_applications,1),
                'junction_applications': junction_applications, 'junction_cpu_dispatch_seconds': junction_seconds,
+               'ownership_loss':float(ownership_total)/max(batch_count,1),
+               'affinity_loss':float(affinity_total)/max(batch_count,1),
                'epoch_seconds': time.perf_counter() - started}
         history.append(row)
         print(json.dumps(row), flush=True)
+        if args.epoch_warning_seconds and row['epoch_seconds']>args.epoch_warning_seconds:
+            print(f'Epoch time {row["epoch_seconds"]:.1f}s exceeds comparison budget '
+                  f'{args.epoch_warning_seconds:.1f}s; compare with refinement weights=0 on the same runtime.',flush=True)
         if score > best:
             best = score
             torch.save({'model': model.state_dict(), 'architecture': architecture,
                         'image_size': args.image_size, 'width': 64, 'epoch': epoch + 1,
                         'val_macro_dice': score, 'seed': args.seed,
-                        'junction_config': asdict(junction_config)}, destination / 'best.pt')
+                        'junction_config': asdict(junction_config),
+                        'ownership_config': asdict(ownership_config) if refinement_enabled else None,
+                        'ownership_weight':args.ownership_weight,'affinity_weight':args.affinity_weight}, destination / 'best.pt')
         (destination / 'history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
 
 
