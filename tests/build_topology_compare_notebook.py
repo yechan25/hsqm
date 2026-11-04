@@ -22,8 +22,10 @@ def main():
 4·5번의 soft/exclusive를 전후 동일 스케일로 비교합니다. 변경된 픽셀 수나 성분 수는 정확도 점수가 아닙니다.
 exclusive의 흰색은 높은 확신을 뜻하지 않습니다. winner margin은 1위와 2위 확률 차이입니다.
 
-마지막 셀은 실제로 저장된 학습용 보조 주석만 확인합니다. 학습 런타임의 manifest/NPZ/캐시가
+보조 주석 진단 셀은 실제로 저장된 학습용 주석만 확인합니다. 학습 런타임의 manifest/NPZ/캐시가
 남아 있어야 하며, 없으면 그 사실을 표시합니다. 새 캔버스에 학습 정답이 있다고 가정하지 않습니다.
+맨 마지막 캔버스 셀에서는 새로 한 번 그린 그림을 두 모델에 동시에 적용합니다.
+준비/설정 코드 셀만 실행한 뒤 캔버스 셀로 바로 넘어갈 수 있습니다.
 ''')
     add('code','''from pathlib import Path
 import json, subprocess, sys, tempfile
@@ -50,7 +52,7 @@ INPUT_PATTERN='*modified*.png'  # None이면 CSV 전체
 INPUT_IMAGE=None       # 예: '.../canvas_실행시간/input.png'. 저장한 같은 그림을 두 모델에 적용
 REFERENCE_ROW=1        # INPUT_IMAGE 사용 시 기준으로 삼을 CSV 행, 헤더 제외 1부터
 FOCUS_STROKES=[4,5]    # None이면 모든 획
-TRAIN_MANIFEST=None   # 마지막 셀용. 학습 코랩 run_config에 기록된 로컬 manifest 자동 확인
+TRAIN_MANIFEST=None   # 주석 진단용. 학습 코랩 run_config에 기록된 로컬 manifest 자동 확인
 TRAIN_ROWS=None       # None: 보조 주석이 저장된 train 그룹을 최대 3개 선택. 또는 [123,...]
 TRAIN_INPUT_PATTERN=None  # 예: '*초*'. 학습 원본 파일명으로 목록/자동 선택 필터링
 
@@ -103,6 +105,14 @@ else:
     supervision_report=inspect_training_supervision(
         TRAIN_MANIFEST,sample_rows=audit_rows,
         save_dir=Path(AFTER_CHECKPOINT).parent/'training_supervision_audit')
+''')
+    add('code','''# 캔버스: 준비/설정(첫 2개 코드 셀) 후 이 셀로 바로 넘어와도 됩니다.
+from stroke_model.compare_topology import compare_canvas
+canvas_comparison_report=compare_canvas(
+    BEFORE_CHECKPOINT,AFTER_CHECKPOINT,CSV_PATH,
+    dataset_root=DATASET_ROOT or DATA_ROOT,
+    focus_strokes=FOCUS_STROKES,canvas_size=384,pen_width=18)
+print('저장한 원본 캔버스:',canvas_comparison_report['canvas_input'])
 ''')
     notebook=dict(cells=cells,metadata=dict(accelerator='GPU',
         kernelspec=dict(display_name='Python 3',language='python',name='python3')),

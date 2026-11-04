@@ -61,14 +61,7 @@ def canvas_prompt(options, size, pen):
     return eval_js(script.replace('__CONFIG__',json.dumps(dict(options=options,size=size,pen=pen))))
 
 
-def run_topology_canvas(checkpoint,csv_path,dataset_root=None,canvas_size=384,pen_width=18,
-                        save_dir=None,show=True):
-    checkpoint,csv_path=existing_path(checkpoint),existing_path(csv_path)
-    frame=pd.read_csv(csv_path);columns=inference_columns(frame)
-    resolve=Resolver(csv_path,existing_path(dataset_root) if dataset_root else csv_path.parent)
-    device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model,size,epoch=load_topology(checkpoint,device)
-    mode=getattr(model,'output_mode','independent')
+def reference_canvas_options(frame,columns,resolve,size):
     options=[]
     print('기준 글자 선택 목록 준비 중...',flush=True)
     for index in frame.drop_duplicates(columns['reference']).index:
@@ -80,6 +73,18 @@ def run_topology_canvas(checkpoint,csv_path,dataset_root=None,canvas_size=384,pe
             preview='data:image/png;base64,'+base64.b64encode(stream.getvalue()).decode('ascii')))
     if not options:
         raise ValueError('CSV has no reference glyphs')
+    return options
+
+
+def run_topology_canvas(checkpoint,csv_path,dataset_root=None,canvas_size=384,pen_width=18,
+                        save_dir=None,show=True):
+    checkpoint,csv_path=existing_path(checkpoint),existing_path(csv_path)
+    frame=pd.read_csv(csv_path);columns=inference_columns(frame)
+    resolve=Resolver(csv_path,existing_path(dataset_root) if dataset_root else csv_path.parent)
+    device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model,size,epoch=load_topology(checkpoint,device)
+    mode=getattr(model,'output_mode','independent')
+    options=reference_canvas_options(frame,columns,resolve,size)
     print('기준 글자를 선택하고 비슷한 위치·크기로 쓴 뒤 획 추출을 누르세요.',flush=True)
     answer=canvas_prompt(options,canvas_size,pen_width)
     row=frame.iloc[int(answer['row'])]

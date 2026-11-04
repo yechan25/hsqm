@@ -182,3 +182,33 @@ def inspect_training_supervision(manifest,sample_rows=(1,),save_dir=None,show=Tr
         results.append(dict(manifest_row=number,status='saved_training_map',image_npz=row['path'],ownership_npz=row['ownership_path']))
     print(results,flush=True)
     return results
+
+
+def compare_canvas(before,after,csv_path,dataset_root=None,focus_strokes=None,
+                   canvas_size=384,pen_width=18,save_dir=None,show=True):
+    """Draw once, save the raw canvas, then compare both models on that image."""
+    import base64
+    import io
+    from PIL import Image
+    from .canvas_topology import canvas_prompt, reference_canvas_options
+    before,after,csv_path=map(existing_path,(before,after,csv_path))
+    state=torch.load(after,map_location='cpu',weights_only=True)
+    size=state['image_size'];del state
+    frame=pd.read_csv(csv_path);columns=inference_columns(frame)
+    resolve=Resolver(csv_path,existing_path(dataset_root) if dataset_root else csv_path.parent)
+    options=reference_canvas_options(frame,columns,resolve,size)
+    print('한 번 그린 동일한 글씨를 두 모델에 적용합니다. 기준을 고르고 획 추출을 누르세요.',flush=True)
+    answer=canvas_prompt(options,canvas_size,pen_width)
+    destination=Path(save_dir) if save_dir else after.parent/('canvas_comparison_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+    destination.mkdir(parents=True,exist_ok=False)
+    raw=Image.open(io.BytesIO(base64.b64decode(answer['png'].split(',',1)[1]))).convert('RGB')
+    image_path=destination/'input.png';raw.save(image_path)
+    if load_ink(image_path,size).sum()<1:raise ValueError('Canvas is empty')
+    report=compare_checkpoints(before,after,csv_path,dataset_root=dataset_root,
+        input_image=image_path,reference_row=int(answer['row'])+1,focus_strokes=focus_strokes,
+        save_dir=destination/'results',show=show)
+    report['canvas_input']=str(image_path)
+    report['reference_csv_row']=int(answer['row'])+1
+    (destination/'canvas_comparison.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    print('같은 그림으로 다시 비교할 때 사용할 INPUT_IMAGE:',image_path,flush=True)
+    return report
