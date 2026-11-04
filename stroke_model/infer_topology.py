@@ -11,10 +11,17 @@ from tqdm.auto import tqdm
 from .convert_reference_csv import Resolver, existing_path
 from .infer_reference import inference_columns, load_inference_row, select_input_files
 from .reference_topology import TopologyStrokeModel, AlignmentConfig
+from .reference_model import ReferenceStrokeModel
+from .reference_v2_topology import ARCHITECTURE
 
 
 def load_topology(checkpoint, device):
     state = torch.load(existing_path(checkpoint), map_location='cpu', weights_only=True)
+    if state.get('architecture') == ARCHITECTURE:
+        model = ReferenceStrokeModel(image_size=state['image_size'], width=state['width'], pretrained=False)
+        model.load_state_dict(state['model'], strict=True)
+        model.output_mode = 'partition'
+        return model.to(device).eval(), state['image_size'], state.get('epoch')
     if state.get('architecture') != TopologyStrokeModel.architecture:
         raise ValueError('Topo best.pt required (reference_topology_aligned_v1); V2/BiFPN cannot be used')
     model = TopologyStrokeModel(image_size=state['image_size'], width=state['width'],
@@ -24,9 +31,15 @@ def load_topology(checkpoint, device):
     return model.to(device).eval(), state['image_size'], state.get('epoch')
 
 
-def ink_diagnostics(image, masks, threshold=.5):
+def export_hard_masks(image, masks, threshold=.5, output_mode='independent'):
+    if output_mode == 'partition':
+        return (np.arange(len(masks))[:,None,None] == masks.argmax(0)) & (image[0] > .5)
+    return masks >= threshold
+
+
+def ink_diagnostics(image, masks, threshold=.5, output_mode='independent'):
     foreground = image[0] > .5
-    hard = masks >= threshold
+    hard = export_hard_masks(image, masks, threshold, output_mode)
     union = hard.any(0)
     count = max(int(foreground.sum()), 1)
     return {'input_ink_pixels': int(foreground.sum()),
@@ -35,12 +48,13 @@ def ink_diagnostics(image, masks, threshold=.5):
             'overlapping_ink_fraction': float(((hard.sum(0)>1) & foreground).sum()/count)}
 
 
-def preview_topology(image, reference, strokes, probabilities, masks, prefix, title, threshold, show):
+def preview_topology(image, reference, strokes, probabilities, masks, prefix, title, threshold, show,
+                     output_mode='independent'):
     import matplotlib.pyplot as plt
     foreground = image[0] > .5
-    hard = masks >= threshold
+    hard = export_hard_masks(image, masks, threshold, output_mode)
     union = hard.any(0)
-    soft_union = image[0]*(1-np.prod(1-probabilities, axis=0))
+    soft_union = masks.sum(0) if output_mode == 'partition' else image[0]*(1-np.prod(1-probabilities, axis=0))
     missing = np.zeros((*foreground.shape, 3))
     missing[foreground] = .35
     missing[foreground & ~union] = (1, 0, 0)
@@ -50,7 +64,7 @@ def preview_topology(image, reference, strokes, probabilities, masks, prefix, ti
     colored[hard.sum(0)>1] = (1, 0, 1)
     figure, axes = plt.subplots(1, 6, figsize=(16, 3))
     panels = ((image[0], 'Input'), (reference[0], 'Reference'), (soft_union, 'Soft union'),
-              (union, f'Hard union >= {threshold}'), (colored, 'Strokes (overlap=magenta)'),
+              (union, 'Exclusive union' if output_mode == 'partition' else f'Hard union >= {threshold}'), (colored, 'Strokes (overlap=magenta)'),
               (missing, 'Uncovered ink = red'))
     for ax, (content, label) in zip(axes, panels):
         ax.imshow(content, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
@@ -62,7 +76,8 @@ def preview_topology(image, reference, strokes, probabilities, masks, prefix, ti
     plt.close(figure)
     figure, axes = plt.subplots(3, len(strokes), figsize=(2*len(strokes), 6), squeeze=False)
     for k in range(len(strokes)):
-        for row, content, label in ((0, strokes[k], 'Ref stroke'), (1, masks[k], 'Soft'), (2, hard[k], 'Hard')):
+        for row, content, label in ((0, strokes[k], 'Ref stroke'), (1, masks[k], 'Soft'),
+                                     (2, hard[k], 'Exclusive' if output_mode == 'partition' else 'Hard')):
             axes[row,k].imshow(content, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
             axes[row,k].set_title(f'{label} {k+1}'); axes[row,k].axis('off')
     figure.tight_layout(); figure.savefig(str(prefix)+'_strokes.png', dpi=140)
@@ -100,11 +115,13 @@ def run_topology_inference(checkpoint, csv_path, dataset_root=None, input_files=
     resolve = Resolver(csv_path, existing_path(dataset_root) if dataset_root else csv_path.parent)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model, size, epoch = load_topology(checkpoint, device)
+    output_mode = getattr(model, 'output_mode', 'independent')
     destination = Path(save_dir) if save_dir else checkpoint.parent/('topo_test_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
     destination.mkdir(parents=True, exist_ok=False)
     report = {'checkpoint': str(checkpoint), 'checkpoint_epoch': epoch, 'csv': str(csv_path),
               'uses_input_stroke_annotations': False, 'threshold': threshold,
-              'postprocessing': 'none', 'results': [], 'skipped': []}
+              'postprocessing': 'v2_argmax_export' if output_mode == 'partition' else 'none',
+              'output_mode': output_mode, 'results': [], 'skipped': []}
     print(f'Topo checkpoint epoch={epoch}; {device}; samples={len(selected)}', flush=True)
     for number in tqdm(selected, desc='Topo inference'):
         try:
@@ -121,14 +138,16 @@ def run_topology_inference(checkpoint, csv_path, dataset_root=None, input_files=
         probabilities, masks = [output[key][0].float().cpu().numpy() for key in ('probabilities', 'masks')]
         arrays = {'probabilities': probabilities, 'soft_masks': masks, 'hard_masks': masks >= threshold,
                   'image': image.numpy(), 'reference': reference.numpy(), 'reference_strokes': strokes.numpy()}
+        arrays['hard_masks'] = export_hard_masks(image.numpy(), masks, threshold, output_mode)
         for key in ('flow', 'hints', 'alignment_theta', 'aligned_reference', 'aligned_strokes'):
-            arrays[key] = output[key][0].float().cpu().numpy()
+            if key in output:
+                arrays[key] = output[key][0].float().cpu().numpy()
         prefix = destination/f'row_{number:05d}'
         np.savez_compressed(str(prefix)+'.npz', **arrays)
-        diagnostics = ink_diagnostics(image.numpy(), masks, threshold)
+        diagnostics = ink_diagnostics(image.numpy(), masks, threshold, output_mode)
         title = f'CSV {number}: {image_path.name} | ink coverage={diagnostics["covered_ink_fraction"]:.1%}'
         preview_topology(image.numpy(), reference.numpy(), strokes.numpy(), probabilities, masks,
-                         prefix, title, threshold, show)
+                         prefix, title, threshold, show, output_mode)
         report['results'].append({'csv_row': number, 'input': str(image_path),
             'reference': str(reference_path), 'npz': str(prefix)+'.npz', **diagnostics})
         print(title, flush=True)

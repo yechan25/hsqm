@@ -1,5 +1,9 @@
 # 전체 정렬과 실제 획 구조 감독을 추가한 추출기
 
+현재 Topo 학습 노트북은 [기존 V2 유지 + 정션 보조 감독](V2_TOPOLOGY.md)으로 수정되었다.
+아래 내용은 실패 비교와 이전 체크포인트 로드를 위해 보존한 독립 Topo 아키텍처 기록이다.
+새 경로에는 전역 affine/ConvLSTM/독립 sigmoid가 없으며 출력의 합은 원본 잉크를 보존한다.
+
 `TopologyStrokeModel`은 기존 V2를 보존하는 별도 실험 아키텍처
 `reference_topology_aligned_v1`이다. 구현과 학습 경로를 제공하며 실제 손글씨로
 학습된 새 체크포인트나 개선된 추출 성능을 제공하는 것은 아니다.
@@ -32,6 +36,9 @@ writer/group ID가 없으면 같은 기준 이미지의 합성 변형을 묶어 
 결과는 `HSQM/topology_runs/실행시간`에 best.pt, history.json, 설정, CSV 선택 기록,
 코드 commit SHA와 검증 그림으로 저장한다. 학습 배치는 Colab 로컬 파일을 사용한다.
 best는 present macro Dice로 선택하며 정션 손실과 다른 학습 손실은 history에 함께 기록한다.
+학습 셀은 하위 프로세스 출력을 직접 읽어 epoch/배치 진행률, ETA, loss, lr를 약 5초마다
+표시하고 전체 로그를 `training.log`에 저장한다. 검증 진행률과 모델 초기화 단계도 표시한다.
+기본 lr=2e-4는 고정이며 epoch 결과와 history에 기록한다.
 실제 Drive ZIP과 GPU 성능은 Colab에서 확인해야 한다.
 
 노트북 재생성: `python tests/build_topology_zip_notebook.py`.

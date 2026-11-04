@@ -33,8 +33,9 @@ def read_manifest(path):
 
 
 class StrokeDataset(Dataset):
-    def __init__(self, rows, size=128):
+    def __init__(self, rows, size=128, include_topology=False):
         self.rows, self.size = rows, size
+        self.include_topology = include_topology
         self.validated = set()
 
     def __len__(self):
@@ -45,11 +46,20 @@ class StrokeDataset(Dataset):
             image, reference, strokes = [torch.from_numpy(sample[key].copy()).float()
                                           for key in ('image', 'reference', 'strokes')]
             raw_labels = sample['labels'].copy()
+            if self.include_topology:
+                if 'target_masks' not in sample:
+                    raise ValueError('Junction supervision requires actual input target_masks')
+                target = torch.from_numpy(sample['target_masks'].copy()).float()
+                valid = (torch.from_numpy(sample['valid_pixels'].copy()).float()
+                         if 'valid_pixels' in sample else torch.ones_like(image))
         if not np.issubdtype(raw_labels.dtype, np.integer):
             raise ValueError('labels must be an integer array; no soft/overlapping labels')
         labels = torch.from_numpy(raw_labels).long()
+        result = (image, reference, strokes, labels)
+        if self.include_topology:
+            result = (*result, target, valid)
         if index in self.validated:
-            return image, reference, strokes, labels
+            return result
         if image.shape != (1, self.size, self.size) or reference.shape != image.shape:
             raise ValueError('image/reference must be 1xSxS; normalize before export')
         if strokes.ndim != 3 or strokes.shape[-2:] != image.shape[-2:] or strokes.shape[0] == 0:
@@ -65,7 +75,7 @@ class StrokeDataset(Dataset):
         if not active.any() or not active[labels[labels >= 0]].all():
             raise ValueError('Annotations reference an absent stroke')
         self.validated.add(index)
-        return image, reference, strokes, labels
+        return result
 
 
 def collate(samples):
@@ -82,7 +92,7 @@ def evaluate(model, loader, device, amp=False, amp_dtype=torch.float16):
     count = torch.zeros((), device=device)
     model.eval()
     for batch in loader:
-        image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch]
+        image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch[:4]]
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp):
             prediction = model(image, ref, strokes)['probabilities'].argmax(1)
         known = labels[:, None] >= 0
@@ -108,8 +118,20 @@ def main():
     p.add_argument('--local-cache', default=None)
     p.add_argument('--image-size', type=int, default=128)
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--lr', type=float, default=2e-4)
+    p.add_argument('--junction-weight', type=float, default=0., help='0: original V2; positive: same V2 plus junction loss')
+    p.add_argument('--junction-every', type=int, default=4)
+    p.add_argument('--junction-max-strokes', type=int, default=4)
     p.add_argument('--init-checkpoint', default=None, help='Compatible V2 weights; starts a new optimizer/run')
     args = p.parse_args()
+    from dataclasses import asdict
+    from .reference_v2_topology import (ARCHITECTURE, JunctionConfig, TopologyDataset,
+                                      collate_topology, v2_topology_loss)
+    junction_config = JunctionConfig(weight=args.junction_weight, every=args.junction_every,
+                                     max_strokes=args.junction_max_strokes)
+    topology_enabled = args.junction_weight > 0
+    if args.lr <= 0 or args.epochs < 1 or args.batch_size < 1 or args.num_workers < 0:
+        raise ValueError('Invalid training settings')
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -125,11 +147,13 @@ def main():
     rows = read_manifest(args.manifest)
     loaders = {}
     for split in ('train', 'val'):
-        dataset = StrokeDataset([r for r in rows if r['split'] == split], args.image_size)
+        auxiliary = topology_enabled and split == 'train'
+        dataset_type = TopologyDataset if auxiliary else StrokeDataset
+        dataset = dataset_type([r for r in rows if r['split'] == split], args.image_size)
         if not len(dataset):
             raise ValueError('Missing split: ' + split)
         loaders[split] = DataLoader(dataset, batch_size=args.batch_size,
-                                   shuffle=split == 'train', collate_fn=collate,
+                                   shuffle=split == 'train', collate_fn=collate_topology if auxiliary else collate,
                                    num_workers=args.num_workers, pin_memory=device.type == 'cuda',
                                    persistent_workers=args.num_workers > 0)
         print(f'{split}: {len(dataset)} samples, {len(loaders[split])} batches', flush=True)
@@ -137,37 +161,58 @@ def main():
     model = ReferenceStrokeModel(image_size=args.image_size, pretrained=not bool(args.init_checkpoint)).to(device)
     if args.init_checkpoint:
         checkpoint = torch.load(args.init_checkpoint, map_location='cpu', weights_only=True)
-        if checkpoint.get('architecture') != 'reference_v2' or checkpoint.get('image_size') != args.image_size:
+        if checkpoint.get('architecture') not in ('reference_v2', ARCHITECTURE) or checkpoint.get('image_size') != args.image_size:
             raise ValueError('초기 가중치는 image_size가 같은 reference_v2 체크포인트여야 합니다')
         model.load_state_dict(checkpoint['model'], strict=True)
         print('Initialized V2 weights:', args.init_checkpoint, flush=True)
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=2e-4, weight_decay=.01)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=.01)
     scaler = torch.amp.GradScaler('cuda', enabled=amp and amp_dtype == torch.float16)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / 'run_config.json').write_text(json.dumps(vars(args), ensure_ascii=False, indent=2), encoding='utf-8')
+    architecture = ARCHITECTURE if topology_enabled else 'reference_v2'
+    (destination / 'run_config.json').write_text(json.dumps({**vars(args), 'architecture': architecture,
+        'junction_config': asdict(junction_config)}, ensure_ascii=False, indent=2), encoding='utf-8')
+    print('Architecture:', architecture, '/ junction:', asdict(junction_config), flush=True)
     best, history = -1., []
+    global_step = 0
     for epoch in range(args.epochs):
         model.train()
         total = 0.
         started = time.perf_counter()
         previous = started
         data_seconds = 0.
+        junction_seconds = 0.
+        junction_total = 0.
+        junction_applications = 0
         progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}', mininterval=5)
         for batch in progress:
             data_seconds += time.perf_counter() - previous
-            image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch]
+            image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch[:4]]
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp):
-                loss = partition_loss(model(image, ref, strokes), labels)['loss']
+                output = model(image, ref, strokes)
+                if topology_enabled:
+                    applying = global_step % junction_config.every == 0
+                    target, valid = ([x.to(device,non_blocking=True) for x in batch[4:6]]
+                                     if applying else (None,None))
+                    auxiliary_started = time.perf_counter()
+                    losses = v2_topology_loss(output, labels, target, valid, junction_config, global_step)
+                    junction_seconds += time.perf_counter()-auxiliary_started
+                    if applying:
+                        junction_total += float(losses['junction'].detach())
+                        junction_applications += 1
+                    loss = losses['loss']
+                else:
+                    loss = partition_loss(output, labels)['loss']
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
             scaler.step(optimizer)
             scaler.update()
+            global_step += 1
             value = loss.item()
             total += value * len(image)
-            progress.set_postfix(loss=f'{value:.4f}', refresh=False)
+            progress.set_postfix(loss=f'{value:.4f}',lr=args.lr, refresh=False)
             previous = time.perf_counter()
         train_seconds = time.perf_counter() - started
         print('Validation...', flush=True)
@@ -175,14 +220,17 @@ def main():
         row = {'epoch': epoch + 1, 'train_loss': total / len(loaders['train'].dataset), 'val_macro_dice': score,
                'train_seconds': train_seconds, 'data_wait_seconds': data_seconds,
                'samples_per_second': len(loaders['train'].dataset) / train_seconds,
+               'learning_rate': args.lr, 'junction_mean_when_applied': junction_total/max(junction_applications,1),
+               'junction_applications': junction_applications, 'junction_cpu_dispatch_seconds': junction_seconds,
                'epoch_seconds': time.perf_counter() - started}
         history.append(row)
         print(json.dumps(row), flush=True)
         if score > best:
             best = score
-            torch.save({'model': model.state_dict(), 'architecture': 'reference_v2',
+            torch.save({'model': model.state_dict(), 'architecture': architecture,
                         'image_size': args.image_size, 'width': 64, 'epoch': epoch + 1,
-                        'val_macro_dice': score, 'seed': args.seed}, destination / 'best.pt')
+                        'val_macro_dice': score, 'seed': args.seed,
+                        'junction_config': asdict(junction_config)}, destination / 'best.pt')
         (destination / 'history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
 
 
