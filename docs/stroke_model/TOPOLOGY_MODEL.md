@@ -20,6 +20,9 @@ CSV는 `path (1).csv` 우선, 없으면 `path.csv`/`paths.csv`를 선택한다.
 `prepare_stroke_zips(..., independent=True)`는 실제 `input_stroke_paths`를 이진
 `target_masks`로 저장하며 겹침과 빈 획 슬롯을 보존한다. exclusive labels에서 복원하지 않는다.
 전체 마스크가 완전한 정답이라고 가정하며 unknown 주석 영역은 CSV 형식으로 제공되지 않는다.
+빈 기준 획(128px 변환 후 최대 잉크값 ≤0.5)이 있는 샘플은 행 전체를 제외하고 계속 진행한다.
+제외한 CSV 행 번호·입력 파일·빈 기준 획 파일은 `skipped_samples.csv`와 변환 보고서에 기록하며,
+학습 결과 폴더에도 복사한다. 입력 정답의 빈 획은 누락 획 감독을 위해 그대로 보존한다.
 writer/group ID가 없으면 같은 기준 이미지의 합성 변형을 묶어 80/20 분리한다.
 같은 기준의 변형이 train/val에 섞이지 않지만 별도 필자 일반화나 독립 test를 보장하지 않는다.
 

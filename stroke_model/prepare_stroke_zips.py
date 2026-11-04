@@ -135,7 +135,7 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
         local_zip.unlink()  # Keep extracted images, reclaim the local archive space.
     selected = find_csv(source, raw, csv_path)
     content = selected.read_bytes()
-    conversion_key = hashlib.sha256(content + f'converter2:{size}:{seed}:{independent}'.encode()).hexdigest()[:16]
+    conversion_key = hashlib.sha256(content + f'converter3:{size}:{seed}:{independent}'.encode()).hexdigest()[:16]
     prepared = cache / ('prepared_' + conversion_key)
     manifest = prepared / 'manifest.json'
     if (prepared / '.complete.json').is_file() and manifest.is_file():
@@ -152,6 +152,7 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
     rows = json.loads(manifest.read_text(encoding='utf-8'))
     (prepared / 'manifest.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8')
     shutil.copyfile(temporary / 'conversion_report.json', prepared / 'conversion_report.json')
+    shutil.copyfile(temporary / 'skipped_samples.csv', prepared / 'skipped_samples.csv')
     (prepared / 'selected_paths.csv').write_bytes(content)
     (prepared / '.complete.json').write_text(json.dumps({'csv_source': str(selected), 'archives': signature}), encoding='utf-8')
     return prepared / 'manifest.json'

@@ -36,6 +36,7 @@ TAR.GZ/TGZ/TAR.BZ2/TAR.XZ도 지원합니다. 기존 네 ZIP 형식도 지원합
 `path (1).csv`가 있으면 우선 사용하고, 없으면 `path.csv`/`paths.csv`를 검색합니다.
 입력=input, 기준=target, 정답=input_stroke, 기준 획=target_stroke입니다.
 교차점의 겹친 획 정답과 빈 획 슬롯을 보존합니다. CSV는 모든 획의 정답을 제공한다고 가정합니다.
+기준 획이 비어 있는 샘플은 전체 행을 제외하고 계속 진행하며 `skipped_samples.csv`에 기록합니다.
 기준/정답 획 순서와 극성은 2번 셀에서 확인하세요.
 
 기본은 ImageNet Swin 사전학습에서 새 학습입니다. 기존 V2 `best.pt`를 지정하면
@@ -79,6 +80,7 @@ manifest = prepare_stroke_zips(data_root, csv_path=CSV_PATH, size=IMAGE_SIZE, se
 report = json.loads((manifest.parent/'conversion_report.json').read_text(encoding='utf-8'))
 print('선택 CSV:', report['csv'], '\\n컬럼:', report['columns'])
 print(report['label_policy'], '\\n검증 분리:', report['split_note'])
+print('빈 기준 획으로 제외:', report['skipped_count'], '개 / 목록:', manifest.parent/'skipped_samples.csv')
 rows = read_manifest(manifest)
 print('train:', sum(r['split']=='train' for r in rows), 'val:', sum(r['split']=='val' for r in rows))
 dataset = IndependentDataset(rows, IMAGE_SIZE)
@@ -110,7 +112,7 @@ LOSS_CONFIG = asdict(TopologyLossConfig())
 ALIGNMENT_CONFIG = asdict(AlignmentConfig())
 output = data_root.parents[1]/'topology_runs'/datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d_%H%M%S_%f')
 output.mkdir(parents=True, exist_ok=False)
-for name in ('conversion_report.json', 'selected_paths.csv', '.complete.json'):
+for name in ('conversion_report.json', 'selected_paths.csv', 'skipped_samples.csv', '.complete.json'):
     shutil.copyfile(manifest.parent/name, output/name.lstrip('.'))
 (output/'git_commit.txt').write_text(commit)
 loss_path = root/'topology_loss.json'; loss_path.write_text(json.dumps(LOSS_CONFIG))

@@ -135,7 +135,7 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'samples').mkdir()
-    rows, reports = [], []
+    rows, reports, skipped_rows = [], [], []
     seen_images = {}
     for index, row in tqdm(df.iterrows(), total=len(df), desc='Convert images to NPZ', unit='sample'):
         try:
@@ -147,8 +147,18 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
                 raise ValueError(f'기준/정답 획 수 불일치: {len(ref_paths)} / {len(target_paths)}')
             strokes = np.concatenate([load_ink(resolve(p), size) for p in ref_paths])
             targets = np.concatenate([load_ink(resolve(p), size) for p in target_paths]) > .5
-            if not (strokes.reshape(len(strokes), -1).max(1) > .5).all():
-                raise ValueError('비어 있는 기준 획 이미지가 있습니다')
+            empty_reference = strokes.reshape(len(strokes), -1).max(1) <= .5
+            if empty_reference.any():
+                empty_paths = [p for p, empty in zip(ref_paths, empty_reference) if empty]
+                if independent:
+                    skipped_rows.append({'csv_row': int(index) + 1,
+                        'input_path': str(row[cols['image']]),
+                        'empty_reference_paths': ';'.join(empty_paths),
+                        'reason': 'empty_reference_stroke_after_resize'})
+                    if len(skipped_rows) <= 5:
+                        print(f'건너뜀: CSV {index + 1}번째 행, 빈 기준 획: {empty_paths}', flush=True)
+                    continue
+                raise ValueError(f'비어 있는 기준 획 이미지가 있습니다: {empty_paths}')
             foreground = image[0] > .5
             counts = targets.sum(0)
             known = foreground & (counts == 1)
@@ -185,6 +195,8 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
                             'missing_pixels': int((foreground & (counts == 0)).sum())})
         except (ValueError, FileNotFoundError) as exc:
             raise ValueError(f'CSV 데이터 {index + 1}번째 행: {exc}') from exc
+    pd.DataFrame(skipped_rows, columns=['csv_row', 'input_path', 'empty_reference_paths', 'reason']).to_csv(
+        output / 'skipped_samples.csv', index=False, encoding='utf-8-sig')
     groups = sorted({r['group_id'] for r in rows})
     if not rows:
         raise ValueError('CSV에 데이터가 없습니다')
@@ -204,10 +216,12 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
               'label_policy': ('실제 입력 획별 이진 마스크 전체 감독; 교차점 공유/빈 획 보존. CSV 획 순서 대응 가정.'
                                if independent else '단독 소유 전경만 감독; 교차/미할당은 -1. CSV 획 순서가 대응한다고 가정.'),
               'supervision': 'actual_input_multihot' if independent else 'exclusive_annotated',
+              'skipped_count': len(skipped_rows), 'skipped_rows': skipped_rows,
               'rows': reports}
     (output / 'conversion_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f"변환 완료: train={sum(r['split']=='train' for r in rows)}, val={sum(r['split']=='val' for r in rows)}, test={sum(r['split']=='test' for r in rows)}")
     print(report['split_note'])
     print(report['label_policy'])
+    print(f'빈 기준 획으로 제외한 샘플: {len(skipped_rows)}개 (skipped_samples.csv)')
     print('획 순서의 의미적 대응은 자동 검증되지 않습니다. conversion_report.json과 미리보기를 확인하세요.')
     return manifest
