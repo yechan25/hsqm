@@ -1,6 +1,7 @@
 """Inference-only Topo checkpoint inspection; never fills or thickens predictions."""
 from datetime import datetime
 import json
+import fnmatch
 from pathlib import Path
 
 import numpy as np
@@ -86,9 +87,14 @@ def preview_topology(image, reference, strokes, probabilities, masks, prefix, ti
     plt.close(figure)
 
 
+def select_pattern_rows(frame, column, pattern):
+    return [i+1 for i,value in enumerate(frame[column]) if fnmatch.fnmatchcase(
+        str(value).replace('\\','/').rsplit('/',1)[-1].casefold(), pattern.casefold())]
+
+
 def run_topology_inference(checkpoint, csv_path, dataset_root=None, input_files=None,
                            sample_rows=None, max_samples=8, seed=42, threshold=.5,
-                           save_dir=None, show=True):
+                           save_dir=None, show=True, input_pattern=None):
     if not 0 < threshold < 1:
         raise ValueError('threshold must be between 0 and 1')
     if input_files is not None and sample_rows is not None:
@@ -100,6 +106,10 @@ def run_topology_inference(checkpoint, csv_path, dataset_root=None, input_files=
         selected = select_input_files(frame, columns['image'], input_files)
     elif sample_rows is not None:
         selected = list(sample_rows)
+    elif input_pattern is not None:
+        selected = select_pattern_rows(frame, columns['image'], input_pattern)
+        if not selected:
+            raise ValueError(f'CSV filenames do not match {input_pattern}; use input_pattern=None for regular inputs')
     else:
         # Spread the default preview across reference glyphs, rather than their variants.
         shuffled = frame.sample(frac=1, random_state=seed)
