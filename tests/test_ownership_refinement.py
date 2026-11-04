@@ -101,7 +101,8 @@ class OwnershipTests(unittest.TestCase):
             self.assertIn('ownership_path',prepared_rows[0]);self.assertNotIn('ownership_path',prepared_rows[1])
             argv=['train','--manifest',str(source),'--output',str(root/'run'),'--epochs','1',
                 '--batch-size','1','--num-workers','0','--image-size','64','--junction-weight','.05',
-                '--ownership-weight','.1','--affinity-weight','.02','--epoch-warning-seconds','33']
+                '--ownership-weight','.1','--affinity-weight','.02','--epoch-warning-seconds','33',
+                '--direction-affinity-weight','.03']
             with patch.object(sys,'argv',argv),patch('stroke_model.train_reference.ReferenceStrokeModel',side_effect=tiny):
                 main()
             state=torch.load(root/'run/best.pt',weights_only=True)

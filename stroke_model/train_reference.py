@@ -136,6 +136,8 @@ def main():
     p.add_argument('--junction-hard-fraction',type=float,default=0.)
     p.add_argument('--seed-focal-weight',type=float,default=0.)
     p.add_argument('--seed-focal-gamma',type=float,default=2.)
+    p.add_argument('--direction-affinity-weight',type=float,default=0.,help='Training-only tangent-weighted same/different owner relations')
+    p.add_argument('--direction-affinity-every',type=int,default=2)
     p.add_argument('--ownership-weight', type=float, default=0., help='Optional cached weak-region CE; 0 disables')
     p.add_argument('--affinity-weight', type=float, default=0., help='Optional same-owner neighbour consistency')
     p.add_argument('--epoch-warning-seconds', type=float, default=None)
@@ -146,6 +148,9 @@ def main():
                                       collate_topology, v2_topology_loss, balanced_seed_focal_loss)
     junction_config = JunctionConfig(weight=args.junction_weight, every=args.junction_every,
                                      max_strokes=args.junction_max_strokes,hard_fraction=args.junction_hard_fraction)
+    from .directional_affinity import directional_affinity_loss
+    if not np.isfinite(args.direction_affinity_weight) or args.direction_affinity_weight<0 or args.direction_affinity_every<1:
+        raise ValueError('Invalid directional affinity settings')
     if any(not np.isfinite(v) or v<0 for v in (args.seed_focal_weight,args.seed_focal_gamma)):
         raise ValueError('Seed focal weight/gamma must be finite and nonnegative')
     topology_enabled = args.junction_weight > 0
@@ -203,11 +208,13 @@ def main():
         import shutil
         shutil.copyfile(Path(args.manifest).parent/'preparation_report.json',
                         destination/'ownership_preparation_report.json')
-    architecture = ARCHITECTURE if topology_enabled or refinement_enabled or args.seed_focal_weight>0 else 'reference_v2'
+    architecture = ARCHITECTURE if topology_enabled or refinement_enabled or args.seed_focal_weight>0 or args.direction_affinity_weight>0 else 'reference_v2'
     (destination / 'run_config.json').write_text(json.dumps({**vars(args), 'architecture': architecture,
         'junction_config': asdict(junction_config),
         'ownership_config': asdict(ownership_config) if refinement_enabled else None}, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Architecture:', architecture, '/ junction:', asdict(junction_config), flush=True)
+    print('Directional affinity weight:',args.direction_affinity_weight,
+          '/ every:',args.direction_affinity_every,'batches (training only)',flush=True)
     best, history = -1., []
     global_step = 0
     for epoch in range(args.epochs):
@@ -221,6 +228,7 @@ def main():
         junction_applications = 0
         ownership_total=0.;affinity_total=0.;batch_count=0
         seed_focal_total=0.
+        direction_total=0.;direction_applications=0
         progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}', mininterval=5)
         for batch in progress:
             data_seconds += time.perf_counter() - previous
@@ -252,6 +260,13 @@ def main():
                     loss=loss+args.ownership_weight*refined['ownership']+args.affinity_weight*refined['affinity']
                     ownership_total=ownership_total+refined['ownership'].detach()
                     affinity_total=affinity_total+refined['affinity'].detach()
+                if args.direction_affinity_weight>0 and global_step%args.direction_affinity_every==0:
+                    with torch.autocast(device_type=device.type,enabled=False):
+                        direction_loss=directional_affinity_loss(output,labels,
+                            owners if refinement_enabled else None,reliability if refinement_enabled else None)
+                    loss=loss+args.direction_affinity_weight*direction_loss
+                    direction_total=direction_total+direction_loss.detach()
+                    direction_applications+=1
                 batch_count+=1
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -275,6 +290,8 @@ def main():
                'ownership_loss':float(ownership_total)/max(batch_count,1),
                'affinity_loss':float(affinity_total)/max(batch_count,1),
                'seed_focal_loss':float(seed_focal_total)/max(batch_count,1),
+               'direction_affinity_loss':float(direction_total)/max(direction_applications,1),
+               'direction_affinity_applications':direction_applications,
                **validation,
                'epoch_seconds': time.perf_counter() - started}
         history.append(row)
@@ -290,6 +307,8 @@ def main():
                         'junction_config': asdict(junction_config),
                         'ownership_config': asdict(ownership_config) if refinement_enabled else None,
                         'seed_focal_weight':args.seed_focal_weight,'seed_focal_gamma':args.seed_focal_gamma,
+                        'direction_affinity_weight':args.direction_affinity_weight,
+                        'direction_affinity_every':args.direction_affinity_every,
                         'ownership_weight':args.ownership_weight,'affinity_weight':args.affinity_weight}, destination / 'best.pt')
         (destination / 'history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
 
