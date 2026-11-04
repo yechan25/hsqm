@@ -46,7 +46,8 @@ def find_csv(source, raw, csv_path=None):
     return candidates[0]
 
 
-def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=None, size=128, seed=42):
+def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=None, size=128, seed=42,
+                        independent=False):
     source = existing_path(source)
     paths = [existing_path(source / name) for name in ARCHIVES]
     signature = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
@@ -82,7 +83,7 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
         local_zip.unlink()  # Keep extracted images, reclaim the local archive space.
     selected = find_csv(source, raw, csv_path)
     content = selected.read_bytes()
-    conversion_key = hashlib.sha256(content + f'converter1:{size}:{seed}'.encode()).hexdigest()[:16]
+    conversion_key = hashlib.sha256(content + f'converter2:{size}:{seed}:{independent}'.encode()).hexdigest()[:16]
     prepared = cache / ('prepared_' + conversion_key)
     manifest = prepared / 'manifest.json'
     if (prepared / '.complete.json').is_file() and manifest.is_file():
@@ -92,7 +93,8 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
     local_csv = cache / 'selected_paths.csv'
     local_csv.write_bytes(content)
     temporary = Path(tempfile.mkdtemp(prefix='conversion_', dir=cache)) / 'prepared'
-    manifest = convert_csv(local_csv, temporary, size=size, seed=seed, dataset_root=raw, local_only=True)
+    manifest = convert_csv(local_csv, temporary, size=size, seed=seed, dataset_root=raw, local_only=True,
+                           independent=independent)
     # Keep converter absolute NPZ paths stable: use the completed temp directory directly.
     prepared.mkdir(exist_ok=True)
     rows = json.loads(manifest.read_text(encoding='utf-8'))

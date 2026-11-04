@@ -51,6 +51,13 @@ class StrokeZipTests(unittest.TestCase):
             self.assertTrue(all(Path(r['path']).is_relative_to(root / 'cache') for r in data))
             self.assertEqual(StrokeDataset(data, size=16)[0][2].shape, (2, 16, 16))
             self.assertEqual(manifest, prepare_stroke_zips(source, root / 'cache', size=16))
+            topology_manifest = prepare_stroke_zips(source, root / 'cache', size=16, independent=True)
+            self.assertNotEqual(topology_manifest, manifest)
+            topology_rows = read_manifest(topology_manifest)
+            with np.load(topology_rows[0]['path']) as sample:
+                self.assertGreater(int((sample['target_masks'].sum(0) > 1).sum()), 0)
+                self.assertTrue((sample['valid_pixels'] == 1).all())
+            self.assertEqual(topology_manifest, prepare_stroke_zips(source, root / 'cache', size=16, independent=True))
             (source / 'paths.csv').write_text('duplicate')
             with self.assertRaises(ValueError):
                 prepare_stroke_zips(source, root / 'cache', size=16)

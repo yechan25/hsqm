@@ -108,7 +108,8 @@ def load_ink(path, size):
     return x[None].copy()
 
 
-def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=None, local_only=False):
+def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=None, local_only=False,
+                independent=False):
     if split not in (None, 'test'):
         raise ValueError('split must be None (train/val) or test')
     csv_path = existing_path(csv_path)
@@ -153,20 +154,29 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
             known = foreground & (counts == 1)
             labels = np.full((size, size), -1, dtype=np.int64)
             labels[known] = targets.argmax(0)[known]
-            if any(not (labels == k).any() for k in range(len(strokes))):
+            if not independent and any(not (labels == k).any() for k in range(len(strokes))):
                 raise ValueError('정답 획 중 단독 소유 픽셀이 없는 획이 있습니다. 획 마스크/극성을 확인해주세요')
             digest = hashlib.sha256(image.tobytes()).hexdigest()
             if group_col:
                 if pd.isna(row[group_col]):
                     raise ValueError('필자/그룹 ID가 비어 있습니다')
                 group = 'writer:' + str(row[group_col])
+            elif independent:
+                # Keep augmented variants sharing a font/character reference together.
+                group = 'reference:' + hashlib.sha256(reference.tobytes()).hexdigest()
             else:
                 group = 'image:' + digest
             if digest in seen_images and seen_images[digest] != group:
                 raise ValueError('동일 입력 이미지에 서로 다른 필자/그룹 ID가 지정되었습니다')
             seen_images[digest] = group
             path = output / 'samples' / f'{index:05d}.npz'
-            np.savez_compressed(path, image=image, reference=reference, strokes=strokes, labels=labels)
+            arrays = dict(image=image, reference=reference, strokes=strokes, labels=labels)
+            if independent:
+                # Actual input annotations, including shared crossings and empty slots.
+                # These are NOT reconstructed from exclusive labels or templates.
+                arrays.update(target_masks=targets.astype(np.float32),
+                              valid_pixels=np.ones_like(image))
+            np.savez_compressed(path, **arrays)
             coverage = float(known.sum() / max(foreground.sum(), 1))
             rows.append({'path': str(path.resolve()), 'group_id': group, 'source': 'legacy_csv_unreviewed',
                          'char_id': str(row[char_col]) if char_col else '', 'source_image': str(image_path)})
@@ -187,12 +197,17 @@ def convert_csv(csv_path, output, size=128, seed=42, dataset_root=None, split=No
     manifest = output / 'manifest.json'
     manifest.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8')
     report = {'csv': str(csv_path), 'columns': cols, 'group_column': group_col,
-              'split_note': '전체 test 전용, 학습/증강 없음' if split == 'test' else ('필자 그룹 분할' if group_col else '원본 이미지 분할: 필자 일반화 평가는 아님'),
-              'label_policy': '단독 소유 전경만 감독; 교차/미할당은 -1. CSV 획 순서가 대응한다고 가정.',
+              'split_note': '전체 test 전용, 학습/증강 없음' if split == 'test' else (
+                  '필자 그룹 분할' if group_col else (
+                      '기준 이미지 그룹 분할: 같은 기준의 합성 변형은 같은 split; 필자 일반화 평가는 아님'
+                      if independent else '원본 이미지 분할: 필자 일반화 평가는 아님')),
+              'label_policy': ('실제 입력 획별 이진 마스크 전체 감독; 교차점 공유/빈 획 보존. CSV 획 순서 대응 가정.'
+                               if independent else '단독 소유 전경만 감독; 교차/미할당은 -1. CSV 획 순서가 대응한다고 가정.'),
+              'supervision': 'actual_input_multihot' if independent else 'exclusive_annotated',
               'rows': reports}
     (output / 'conversion_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f"변환 완료: train={sum(r['split']=='train' for r in rows)}, val={sum(r['split']=='val' for r in rows)}, test={sum(r['split']=='test' for r in rows)}")
     print(report['split_note'])
-    print(f"평균 정답 커버리지: {np.mean([r['annotation_coverage'] for r in reports]):.1%}; 겹침/누락은 평가에서 제외됩니다.")
+    print(report['label_policy'])
     print('획 순서의 의미적 대응은 자동 검증되지 않습니다. conversion_report.json과 미리보기를 확인하세요.')
     return manifest
