@@ -1,6 +1,10 @@
 # Font tests
 
-폰트 관련 실험 코드와 설정을 저장하는 폴더입니다. 아직 실험 구현은 추가하지 않았습니다.
+폰트 관련 실험 코드와 설정을 저장하는 폴더입니다.
+
+`render.py`는 다른 폰트의 글자를 비율을 유지해 렌더링하는 도우미입니다.
+Topo 테스트는 `notebooks/test_topology_fonts.ipynb`, 실행 모듈은
+`stroke_model/font_topology.py`, 설명은 `docs/stroke_model/TOPOLOGY_FONTS.md`에 있습니다.
 
 - 재사용할 코드와 작은 설정 파일은 이 폴더에서 버전 관리합니다.
 - 실험 목적, 실행 방법과 결과를 코드와 함께 문서화합니다.
