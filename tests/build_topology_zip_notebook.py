@@ -16,13 +16,22 @@ def main():
             cell.update(execution_count=None, outputs=[])
         cells.append(cell)
 
-    add('markdown', '''# Topology 획 추출 모델 학습
+    add('markdown', '''# Topo 획 추출 모델 학습
 GPU 런타임에서 위부터 실행하세요. 입력 글자의 실제 획 정답으로 학습합니다.
 전역 affine 정렬 + 동결 Swin-T/FPN + 국소 flow + 양방향 ConvLSTM + 획별 sigmoid.
 정션 손실은 예측과 실제 정답의 구조 차이를 비교합니다. 실제 정답에 있는 가지는 제거 대상이 아닙니다.
 
 데이터: 공유 Drive의 `2026 자율연구/HSQM/dataset/automated_train_dataset` 안
-`input.zip`, `input_stroke.zip`, `target.zip`, `target_stroke.zip`과 CSV.
+아래와 같은 폴더별 TAR 묶음과 CSV를 사용합니다. 각 TAR은 독립 압축 파일입니다.
+```
+automated_train_dataset/
+  path (1).csv
+  input_stroke/input_stroke_(0).tar ... input_stroke_(5).tar
+  input/input_(0).tar ... input_(5).tar
+  target_stroke/target_stroke_(0).tar ... target_stroke_(5).tar
+  target/target_(0).tar ... target_(5).tar
+```
+각 폴더의 TAR을 번호순으로 모두 읽습니다. 기존 네 ZIP 형식도 지원합니다.
 `path (1).csv`가 있으면 우선 사용하고, 없으면 `path.csv`/`paths.csv`를 검색합니다.
 입력=input, 기준=target, 정답=input_stroke, 기준 획=target_stroke입니다.
 교차점의 겹친 획 정답과 빈 획 슬롯을 보존합니다. CSV는 모든 획의 정답을 제공한다고 가정합니다.

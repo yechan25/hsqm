@@ -8,9 +8,13 @@
 
 [Topology 학습 코랩 열기](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/train_topology_zips.ipynb)
 
-GPU 런타임에서 준비 → ZIP/CSV 변환 및 실제 획 정답 확인 → 학습 → 검증 미리보기 순서로 실행한다.
+GPU 런타임에서 준비 → TAR/ZIP 및 CSV 변환과 실제 획 정답 확인 → 학습 → 검증 미리보기 순서로 실행한다.
 데이터는 공유 Drive의 `2026 자율연구/HSQM/dataset/automated_train_dataset`에 둔다.
-기존 네 ZIP을 사용하며 CSV는 `path (1).csv` 우선, 없으면 `path.csv`/`paths.csv`를 선택한다.
+각 역할 폴더 안의 TAR을 사용한다. 예: `input_stroke/input_stroke_(0).tar`부터
+`input_stroke_(5).tar`까지. `input`, `target_stroke`, `target` 폴더도 같은 방식이다.
+각 TAR은 독립 압축 파일이어야 하며 번호순으로 모두 복사·해제한다. 번호 누락/중복은 중단한다.
+완료한 TAR은 재실행할 때 재사용한다. 해당 역할의 TAR이 없으면 기존 `역할.zip`도 지원한다.
+CSV는 `path (1).csv` 우선, 없으면 `path.csv`/`paths.csv`를 선택한다.
 `CSV_PATH`로 정확한 파일을 지정할 수 있다. CSV 자체와 데이터는 GitHub에 올리지 않는다.
 
 `prepare_stroke_zips(..., independent=True)`는 실제 `input_stroke_paths`를 이진
