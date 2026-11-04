@@ -1,8 +1,8 @@
 # Drive ZIP 기반 획 학습
 
 `prepare_stroke_zips`는 폴더별 TAR 묶음도 지원한다. 데이터 폴더 아래
-`input_stroke/input_stroke_(0).tar` ... `(5).tar`와 `input`, `target_stroke`,
-`target`의 같은 구조를 자동 검색하고 번호순으로 처리한다. 각 TAR은 독립 압축 파일이다.
+`input_stroke`, `input`, `target_stroke`, `target` 폴더의 하위 폴더까지 모든 TAR/ZIP을
+파일명·번호·개수 제한 없이 자동 검색한다. 각 TAR은 독립 압축 파일이다.
 역할별 TAR이 없을 때 기존 `역할.zip`으로 대체한다. Topo 모델 학습은
 `notebooks/train_topology_zips.ipynb`를 사용하며 실제 입력 획의 공유 교차점을 보존한다.
 

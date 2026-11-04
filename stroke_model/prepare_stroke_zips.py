@@ -1,7 +1,6 @@
 """Stage the four stroke archives locally; use CSV for semantic correspondence."""
 import hashlib
 import json
-import re
 import shutil
 import stat
 import tarfile
@@ -17,7 +16,7 @@ ARCHIVES = ('input_stroke.zip', 'input.zip', 'target_stroke.zip', 'target.zip')
 
 
 def discover_archives(source):
-    """Each numbered TAR is a complete archive, not a byte-split TAR volume."""
+    """Discover every supported archive recursively, regardless of name/count."""
     paths = []
     for name in ARCHIVES:
         role = Path(name).stem
@@ -27,23 +26,18 @@ def discover_archives(source):
             folder = source / role
         parts = []
         if folder.is_dir():
-            pattern = re.compile(re.escape(role) + r'_\((\d+)\)\.tar(?:\.gz)?$', re.IGNORECASE)
-            for path in folder.iterdir():
-                match = pattern.fullmatch(path.name)
-                if path.is_file() and match:
-                    parts.append((int(match[1]), path))
+            extensions = ('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.zip')
+            parts = sorted((path for path in folder.rglob('*')
+                            if path.is_file() and path.name.casefold().endswith(extensions)),
+                           key=lambda path: path.relative_to(folder).as_posix().casefold())
         if parts:
-            parts.sort(key=lambda item: item[0])
-            numbers = [number for number, _ in parts]
-            if numbers != list(range(numbers[-1] + 1)):
-                raise ValueError(f'{role}: TAR 번호가 중복되거나 누락되었습니다: {numbers}')
-            paths.extend(path for _, path in parts)
+            paths.extend(parts)
         else:
             try:
                 paths.append(existing_path(source / name))
             except FileNotFoundError as exc:
                 raise FileNotFoundError(
-                    f'{source / role} 안의 {role}_(0).tar, {role}_(1).tar, ... '
+                    f'{source / role} 안의 TAR/ZIP 압축 파일 '
                     f'또는 {source / name}을 찾을 수 없습니다.') from exc
     return paths
 
@@ -107,17 +101,19 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
     paths = discover_archives(source)
     print('사용할 압축 파일:', len(paths), '개', flush=True)
     signature = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
-    key = hashlib.sha256(json.dumps(signature).encode()).hexdigest()[:16]
+    key = hashlib.sha256(b'archive_layout2:' + json.dumps(signature).encode()).hexdigest()[:16]
     cache = Path(local_root) / key
     raw = cache / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
     for path in paths:
-        destination = raw / path.stem
+        # Different folders may contain archives with identical filenames.
+        archive_id = hashlib.sha256(path.relative_to(source).as_posix().encode()).hexdigest()[:16]
+        destination = raw / archive_id
         if (destination / '.complete.json').is_file():
             print('로컬 압축 데이터 재사용:', path.name, flush=True)
             continue
         # Failed copies/extractions never create the completion marker.
-        local_zip = cache / path.name
+        local_zip = cache / (archive_id + '_' + path.name)
         before = (path.stat().st_size, path.stat().st_mtime_ns)
         if shutil.disk_usage(cache).free < before[0]:
             raise OSError('압축 파일 복사를 위한 로컬 디스크 공간이 부족합니다')

@@ -26,12 +26,13 @@ GPU 런타임에서 위부터 실행하세요. 입력 글자의 실제 획 정�
 ```
 automated_train_dataset/
   path (1).csv
-  input_stroke/input_stroke_(0).tar ... input_stroke_(5).tar
-  input/input_(0).tar ... input_(5).tar
-  target_stroke/target_stroke_(0).tar ... target_stroke_(5).tar
-  target/target_(0).tar ... target_(5).tar
+  input_stroke/  # 폴더와 하위 폴더의 압축 파일 전체
+  input/
+  target_stroke/
+  target/
 ```
-각 폴더의 TAR을 번호순으로 모두 읽습니다. 기존 네 ZIP 형식도 지원합니다.
+파일명·번호·개수를 제한하지 않고 하위 폴더까지 TAR/ZIP을 전부 찾습니다.
+TAR.GZ/TGZ/TAR.BZ2/TAR.XZ도 지원합니다. 기존 네 ZIP 형식도 지원합니다.
 `path (1).csv`가 있으면 우선 사용하고, 없으면 `path.csv`/`paths.csv`를 검색합니다.
 입력=input, 기준=target, 정답=input_stroke, 기준 획=target_stroke입니다.
 교차점의 겹친 획 정답과 빈 획 슬롯을 보존합니다. CSV는 모든 획의 정답을 제공한다고 가정합니다.

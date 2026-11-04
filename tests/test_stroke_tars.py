@@ -22,12 +22,14 @@ def png(mask):
 
 
 class StrokeTarTests(unittest.TestCase):
-    def test_six_tars_per_folder_to_topology_data_and_cached_reload(self):
+    def test_arbitrary_names_nested_archives_to_topology_data_and_cached_reload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root/'dataset'
             source.mkdir()
             rows = []
+            archive_names = ('batch-A.tar', 'part_9.tar', 'nested/extra.tar',
+                             'nested/second.tar.gz', 'odd_(42).tar', 'nested/deeper/batch-A.tar')
             for index in range(6):
                 a = np.zeros((32, 32), np.uint8)
                 b = a.copy()
@@ -43,7 +45,9 @@ class StrokeTarTests(unittest.TestCase):
                 for role, files in contents.items():
                     folder = source/role
                     folder.mkdir(exist_ok=True)
-                    with tarfile.open(folder/f'{role}_({index}).tar', 'w') as archive:
+                    archive_path = folder/archive_names[index]
+                    archive_path.parent.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(archive_path, 'w:gz' if archive_path.suffix == '.gz' else 'w') as archive:
                         for filename, mask in files:
                             data = png(mask)
                             # Support both bare filenames and nested folders inside TARs.
@@ -56,7 +60,7 @@ class StrokeTarTests(unittest.TestCase):
             pd.DataFrame(rows).to_csv(csv, index=False)
             paths = discover_archives(source)
             self.assertEqual(len(paths), 24)
-            self.assertEqual([p.name for p in paths[:6]], [f'input_stroke_({i}).tar' for i in range(6)])
+            self.assertEqual({p.relative_to(source/'input_stroke').as_posix() for p in paths[:6]}, set(archive_names))
             with contextlib.redirect_stdout(io.StringIO()):
                 manifest = prepare_stroke_zips(source, root/'cache', csv_path=csv, size=32, independent=True)
                 cached = prepare_stroke_zips(source, root/'cache', csv_path=csv, size=32, independent=True)
@@ -70,16 +74,21 @@ class StrokeTarTests(unittest.TestCase):
             signature = json.loads((manifest.parent/'.complete.json').read_text())
             self.assertEqual(len(signature['archives']), 24)
 
-    def test_missing_number_is_reported_before_copying(self):
+    def test_any_count_gaps_and_new_archives_are_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            folder = root/'input_stroke'
-            folder.mkdir()
-            for index in (0,2):
-                with tarfile.open(folder/f'input_stroke_({index}).tar', 'w'):
+            for role in ('input_stroke', 'input', 'target_stroke', 'target'):
+                folder = root/role
+                folder.mkdir()
+                with tarfile.open(folder/'anything_(12).tar', 'w'):
                     pass
-            with self.assertRaisesRegex(ValueError, 'TAR'):
-                discover_archives(root)
+            self.assertEqual(len(discover_archives(root)), 4)
+            nested = root/'input_stroke'/'new'
+            nested.mkdir()
+            with tarfile.open(nested/'different-name.TAR', 'w'):
+                pass
+            (nested/'ignore.txt').write_text('not an archive')
+            self.assertEqual(len(discover_archives(root)), 5)
 
     def test_tar_traversal_and_links_rejected_before_extracting(self):
         for unsafe in ('../escape.png', 'C:/escape.png', '/escape.png', 'link'):
