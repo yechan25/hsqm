@@ -37,7 +37,7 @@ def extraction_samples(report):
             if strokes.ndim!=3 or masks.shape!=strokes.shape:
                 raise ValueError('Topo masks and reference stroke shapes differ')
             count=len(strokes)
-        samples.append(dict(input=entry.get('input',str(path)),npz=str(path),csv_row=entry.get('csv_row'),
+        samples.append(dict(input=entry.get('input',str(path)),npz=str(path),csv_row=entry.get('csv_row'),label=entry.get('label'),
             strokes=[dict(stroke=k+1,measurement_status='extractor_errors_not_scored') for k in range(count)]))
     return samples
 
@@ -64,7 +64,8 @@ def plot_extraction_with_score(sample,score,prefix,output_mode='partition',show=
         axes[0,index+2].set_title(f'Soft {index+1}')
         axes[1,index+2].imshow(hard[index],cmap='gray',vmin=0,vmax=1,interpolation='nearest')
         axes[1,index+2].set_title(f'Exclusive {index+1}' if output_mode=='partition' else f'Hard {index+1}')
-    figure.suptitle(f"Source ink score = {score['structural_score']:.1f}; Topo masks are displayed, not scored")
+    label=(sample.get('label')+' | ') if sample.get('label') else ''
+    figure.suptitle(f"{label}Source ink score = {score['structural_score']:.1f}; Topo masks are displayed, not scored")
     figure.tight_layout();path=str(prefix)+'.png';figure.savefig(path,dpi=140)
     if show:plt.show()
     plt.close(figure)

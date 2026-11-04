@@ -12,7 +12,7 @@ from PIL import Image
 import torch
 
 from font_test.render import font_supports,render_glyph
-from stroke_model.font_topology import reference_catalog,run_topology_fonts
+from stroke_model.font_topology import reference_catalog,run_topology_fonts,run_scored_topology_fonts
 
 
 class FontTopologyTests(unittest.TestCase):
@@ -81,6 +81,21 @@ class FontTopologyTests(unittest.TestCase):
                     else:self.assertGreater(float(np.abs(arrays['image']-ref).sum()),10)
             self.assertEqual(checkpoint.read_bytes(),b'unchanged')
             self.assertEqual(json.loads((root/'results/font_report.json').read_text(encoding='utf-8'))['glyph'],'A')
+            config=dict(translation=.01,rotation=.01,scale_min=.999,scale_max=1.001,shear=.001,
+                        registration_iterations=1)
+            with patch('stroke_model.font_topology.run_topology_fonts',return_value=report) as extract:
+                scored=run_scored_topology_fonts('fixture',source_config=config,show=False)
+                extract.assert_called_once();self.assertFalse(extract.call_args.kwargs['show'])
+            scores=scored['font_scores']
+            self.assertEqual([s['font'] for s in scores],[s['label'] for s in report['results']])
+            self.assertGreaterEqual(scores[0]['structural_score'],99)
+            self.assertLess(scores[1]['structural_score'],scores[0]['structural_score'])
+            self.assertFalse(scored['topology_masks_used_for_score'])
+            saved=pd.read_csv(Path(scored['save_dir'])/'font_scores.csv')
+            self.assertEqual(len(saved),2)
+            self.assertIn('extra_score_cap',saved.columns)
+            self.assertTrue(Path(scored['debug_zip']).is_file())
+            self.assertEqual(checkpoint.read_bytes(),b'unchanged')
 
 
 if __name__=='__main__':unittest.main()

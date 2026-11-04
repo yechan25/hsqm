@@ -101,3 +101,27 @@ def run_topology_fonts(checkpoint,csv_path,csv_row,glyph,font_paths,dataset_root
     pd.DataFrame(report['results']).to_csv(destination/'font_results.csv',index=False,encoding='utf-8-sig')
     print('Saved:',destination,flush=True)
     return report
+
+
+def run_scored_topology_fonts(*args,score_config=None,source_config=None,show=True,export_debug=True,**kwargs):
+    """Render/extract once, score original font ink with the existing source metric."""
+    from .topology_scoring import score_topology_results
+    extraction=run_topology_fonts(*args,show=False,**kwargs)
+    report=score_topology_results(extraction,score_config=score_config,source_config=source_config,
+                                show=show,export_debug=export_debug)
+    rows=[]
+    measured=report['indicator']['results']
+    if len(measured)!=len(extraction['results']):raise ValueError('Font/score sample counts differ')
+    for original,score in zip(extraction['results'],measured):
+        rows.append(dict(font=original['label'],font_path=original['font'],control=original['control'],
+            structural_score=score['structural_score'],
+            **{key+'_score_cap':score[key+'_score_cap'] for key in ('missing','split','junction','extra')}))
+    table=pd.DataFrame(rows)
+    table.to_csv(Path(report['save_dir'])/'font_scores.csv',index=False,encoding='utf-8-sig')
+    report['font_scores']=rows
+    (Path(report['save_dir'])/'combined_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    if show:
+        from IPython.display import display,Image as DisplayImage
+        display(DisplayImage(filename=extraction['comparison']))
+        display(table)
+    return report

@@ -22,7 +22,10 @@ def main():
 
 처음의 Reference control은 기준 이미지 자체를 입력한 대조군입니다.
 이어지는 결과는 다른 폰트를 입력한 결과입니다. 폰트별 입력/획 비교표와 Soft·Exclusive 전체를 저장합니다.
-훈련·체크포인트 변경·출력 팽창/직선 보정은 하지 않습니다. 점수는 기본 계산하지 않습니다.
+폰트마다 기존 원본 잉크 점수와 누락/끊김/정션/추가 잉크 점수 상한을 함께 계산합니다.
+추출 마스크 오류는 숫자 점수에 넣지 않습니다. 점수는 기존 규칙 기반 지표이며 폰트 추출 정확도가 아닙니다.
+폰트별 점수표·획별 점수·진단 ZIP도 저장하며, 점수 정렬/측정 때문에 추론보다 시간이 더 걸릴 수 있습니다.
+훈련·체크포인트 변경·출력 팽창/직선 보정은 하지 않습니다.
 새 폰트의 획별 정답이 없으므로 정확도나 확산 모델의 성능을 측정하는 실험은 아닙니다.
 100% ink coverage는 softmax 분할의 성질이며 올바른 분리를 뜻하지 않습니다.
 학습 폰트 목록을 별도로 대조하지 않으므로 미학습 폰트임을 보장하지 않습니다.
@@ -47,7 +50,7 @@ drive.mount('/content/drive')
 output.enable_custom_widget_manager()
 ''')
     add('code','''from stroke_model.convert_reference_csv import existing_path
-from stroke_model.font_topology import reference_catalog,run_topology_fonts
+from stroke_model.font_topology import reference_catalog,run_scored_topology_fonts
 HSQM=existing_path('/content/drive/Shareddrives/2026 자율연구/HSQM')
 CHECKPOINT=None  # 특정 Before/After best.pt 경로를 직접 지정할 수 있습니다.
 DATA_ROOT=HSQM/'dataset/test_dataset'
@@ -55,6 +58,9 @@ CSV_PATH=None
 DATASET_ROOT=None
 EXTRA_FONT_DIR=None  # 추가 .ttf/.otf/.ttc가 있는 Drive 폴더. 컬렉션은 첫 face 사용.
 PLACEMENT='reference_bbox'  # 또는 'centered'
+SCORE_CONFIG={}  # 기존 점수 공식 기본값
+SOURCE_CONFIG={}  # 기존 원본 잉크 정렬/측정 기본값
+EXPORT_DEBUG=True
 if CHECKPOINT is None:
     candidates=sorted((HSQM/'v2_topology_runs').glob('*/best.pt'),key=lambda p:p.parent.name)
     if not candidates:raise FileNotFoundError('CHECKPOINT에 Topo best.pt 경로를 지정하세요.')
@@ -104,13 +110,20 @@ display(widgets.VBox([reference_select,reference_preview,glyph_text,font_select]
 print('기준 그림과 같은 문자를 입력하세요. 파일명이 숫자이면 문자를 자동으로 추측하지 않습니다.')
 print('폰트는 Ctrl/Cmd를 눌러 여러 개 선택할 수 있습니다. 선택 후 다음 셀 실행.')
 ''')
-    add('code','''font_report=run_topology_fonts(
+    add('code','''font_report=run_scored_topology_fonts(
     CHECKPOINT,CSV_PATH,csv_row=int(reference_select.value),glyph=glyph_text.value,
     font_paths=list(font_select.value),dataset_root=DATASET_ROOT or DATA_ROOT,
-    placement=PLACEMENT,include_reference_control=True)
-report_dir=Path(font_report['results'][0]['npz']).parent
+    placement=PLACEMENT,include_reference_control=True,
+    score_config=SCORE_CONFIG,source_config=SOURCE_CONFIG,export_debug=EXPORT_DEBUG)
+report_dir=Path(font_report['save_dir'])
 (report_dir/'git_commit.txt').write_text(commit)
-print('기준 입력 대조군 + 다른 폰트 결과 저장:',report_dir)
+print('기준 입력 대조군 + 다른 폰트 추출·점수 저장:',report_dir)
+if font_report.get('debug_zip'):
+    from google.colab import files
+    button=widgets.Button(description='진단 ZIP 다운로드')
+    debug_path=font_report['debug_zip']
+    button.on_click(lambda _,path=debug_path:files.download(path))
+    display(button)
 ''')
     notebook=dict(cells=cells,metadata=dict(accelerator='GPU',kernelspec=dict(display_name='Python 3',language='python',name='python3')),nbformat=4,nbformat_minor=5)
     (ROOT/'notebooks/test_topology_fonts.ipynb').write_text(json.dumps(notebook,ensure_ascii=False,indent=2),encoding='utf-8')

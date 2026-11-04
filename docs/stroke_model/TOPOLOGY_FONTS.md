@@ -33,8 +33,18 @@ rows and extracted strokes as columns. JSON records font path/hash, placement,
 checkpoint, epoch, reference row, and coverage diagnostics; notebook also saves
 the repository commit. Save directories are unique beside the checkpoint.
 
-No input stroke annotations are read. Source scores are deliberately omitted
-from this extraction experiment. There are no new-font per-stroke ground truths,
+No input stroke annotations are read. The notebook calls
+`run_scored_topology_fonts`, which extracts once and passes the saved original
+font ink snapshots to the existing `score_topology_results` source scorer.
+It displays source scores beside Soft/Exclusive predictions and a font score
+table (total plus missing/split/junction/extra caps). `font_scores.csv`, per-stroke
+scores, JSON, and a downloadable diagnosis ZIP are saved in a unique score
+directory; raw font renders remain in the separate extraction directory.
+Numeric scores do not use extractor masks. They are existing uncalibrated
+structural indicators, not font segmentation accuracy; style/placement differences
+can trigger penalties. Scores/settings/formulas are unchanged. Additional source
+registration and measurement take time. `SCORE_CONFIG`/`SOURCE_CONFIG` expose
+existing scorer overrides. There are no new-font per-stroke ground truths,
 so neither ink coverage nor the visual table is an accuracy measurement. Coverage
 is trivially complete for V2 partition output. Fonts are not checked against the
 training font list, so this is not a guaranteed held-out-font benchmark. Cleaner
