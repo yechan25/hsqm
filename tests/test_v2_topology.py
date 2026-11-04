@@ -102,19 +102,24 @@ class V2TopologyTests(unittest.TestCase):
             (root/'manifest.json').write_text(json.dumps(rows))
             argv = ['train','--manifest',str(root/'manifest.json'),'--output',str(root/'run'),
                     '--epochs','1','--batch-size','1','--num-workers','0','--image-size','64',
-                    '--junction-weight','.05','--junction-every','1']
+                    '--junction-weight','.05','--junction-every','1',
+                    '--junction-hard-fraction','.5','--seed-focal-weight','.1']
             with patch.object(sys,'argv',argv),patch('stroke_model.train_reference.ReferenceStrokeModel',side_effect=tiny):
                 main()
             checkpoint = root/'run/best.pt'
             state = torch.load(checkpoint,weights_only=True)
             self.assertEqual(state['architecture'],ARCHITECTURE)
+            self.assertEqual(state['seed_focal_weight'],.1)
+            self.assertEqual(state['junction_config']['hard_fraction'],.5)
             with patch('stroke_model.infer_topology.ReferenceStrokeModel',side_effect=tiny):
                 model,size,epoch = load_topology(checkpoint,'cpu')
             self.assertEqual((size,epoch),(64,1))
             self.assertEqual(model.output_mode,'partition')
             output = model(self.image,self.image,self.target)
             torch.testing.assert_close(output['masks'].sum(1,keepdim=True),self.image)
-            self.assertIn('samples_per_second',json.loads((root/'run/history.json').read_text())[0])
+            history=json.loads((root/'run/history.json').read_text())[0]
+            self.assertIn('samples_per_second',history)
+            self.assertIn('val_low_seed_recall_strokes',history)
             Image.fromarray(np.uint8(255*(1-self.image[0,0].numpy()))).save(root/'input.png')
             for k in range(2):
                 Image.fromarray(np.uint8(255*(1-self.target[0,k].numpy()))).save(root/f's{k}.png')

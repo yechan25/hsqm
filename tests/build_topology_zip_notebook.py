@@ -113,9 +113,24 @@ INIT_CHECKPOINT = None  # 선택: 같은 해상도/폭의 V2 또는 현재 V2+�
 JUNCTION_WEIGHT = 0.05  # 모든 보조 가중치를 0으로 하면 기존 V2 기본 손실
 JUNCTION_EVERY = 4  # 4배치마다 정션 항 계산
 JUNCTION_MAX_STROKES = 4  # 적용 배치마다 전체 획 중 최대 4개를 순환 선택
-OWNERSHIP_WEIGHT = 0.0  # 실험: 0.1. 먼저 아래 약한 주석 미리보기를 확인하세요.
-AFFINITY_WEIGHT = 0.0  # 실험: 0.02. 소유 획이 명확한 이웃만 일관성 감독.
+JUNCTION_HARD_FRACTION = 0.5  # 계산 획 수는 유지. 절반은 다른 획 정답을 침범한 채널, 절반은 순환
+SEED_FOCAL_WEIGHT = 0.1  # 실제 주석이 있는 작은/어려운 획에 집중. 0이면 이전 방식
+SEED_FOCAL_GAMMA = 2.0
+OWNERSHIP_WEIGHT = None  # None: 초기 모델 설정을 계승. 새 학습은 0. 직접 0.1 등 지정 가능
+AFFINITY_WEIGHT = None  # None: 초기 모델 설정을 계승. 새 학습은 0. 직접 0.02 등 지정 가능
 EPOCH_WARNING_SECONDS = 33  # 현재 약 30s 대비 비교 예산. 초과 시 경고하며 자동 중단하지 않음.
+local_checkpoint = None
+inherited = {}
+if INIT_CHECKPOINT:
+    local_checkpoint = root/'v2_initializer.pt'
+    shutil.copyfile(INIT_CHECKPOINT, local_checkpoint)
+    inherited = torch.load(local_checkpoint, map_location='cpu', weights_only=True)
+if OWNERSHIP_WEIGHT is None:
+    OWNERSHIP_WEIGHT = inherited.get('ownership_weight') or 0.0
+if AFFINITY_WEIGHT is None:
+    AFFINITY_WEIGHT = inherited.get('affinity_weight') or 0.0
+del inherited
+print('영역 감독 계승:', OWNERSHIP_WEIGHT, AFFINITY_WEIGHT)
 if OWNERSHIP_WEIGHT or AFFINITY_WEIGHT:
     from stroke_model.ownership_refinement import preview_ownership_samples
     preview_ownership_samples(manifest, count=3)
@@ -130,11 +145,11 @@ cmd = [sys.executable, '-u', '-m', 'stroke_model.train_reference',
        '--seed', str(SEED), '--num-workers', '2',
        '--junction-weight', str(JUNCTION_WEIGHT), '--junction-every', str(JUNCTION_EVERY),
        '--junction-max-strokes', str(JUNCTION_MAX_STROKES),
+       '--junction-hard-fraction', str(JUNCTION_HARD_FRACTION),
+       '--seed-focal-weight', str(SEED_FOCAL_WEIGHT), '--seed-focal-gamma', str(SEED_FOCAL_GAMMA),
        '--ownership-weight', str(OWNERSHIP_WEIGHT), '--affinity-weight', str(AFFINITY_WEIGHT),
        '--epoch-warning-seconds', str(EPOCH_WARNING_SECONDS)]
-if INIT_CHECKPOINT:
-    local_checkpoint = root/'v2_initializer.pt'
-    shutil.copyfile(INIT_CHECKPOINT, local_checkpoint)
+if local_checkpoint:
     cmd += ['--init-checkpoint', str(local_checkpoint)]
 (output/'initial_checkpoint_source.txt').write_text(str(INIT_CHECKPOINT))
 print('모델: 기존 V2 + 정션 보조 손실 / 결과:', output, flush=True)

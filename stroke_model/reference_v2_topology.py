@@ -26,10 +26,13 @@ class JunctionConfig:
     temperature: float = .08
     skeleton_iterations: int = 12
     radius: int = 1
+    hard_fraction: float = 0.0  # 0: original rotating sampler; .5: half hard + half rotating
 
     def __post_init__(self):
         if not math.isfinite(self.weight) or self.weight < 0:
             raise ValueError('junction weight must be finite and nonnegative')
+        if not math.isfinite(self.hard_fraction) or not 0 <= self.hard_fraction <= 1:
+            raise ValueError('hard_fraction must be in [0,1]')
         if not 0 < self.threshold < 1 or not math.isfinite(self.temperature) or self.temperature <= 0:
             raise ValueError('Invalid junction occupancy settings')
         if any(not isinstance(v, int) or v < 1 for v in
@@ -73,7 +76,45 @@ def junction_map(masks, cfg):
     return F.avg_pool2d(response, 3, 1, 1)
 
 
-def junction_discrepancy(output, target_masks, valid_pixels, cfg, step=0):
+def select_junction_strokes(output,target,valid,cfg,step=0,labels=None):
+    """Keep the SAME skeleton budget; mix foreign-seed confusion with rotation."""
+    eligible=output['active']&((target*valid).sum((-2,-1))>0)
+    indices=eligible.nonzero(as_tuple=False)
+    if not len(indices):return indices
+    count=min(cfg.max_strokes,len(indices))
+    start=((step//cfg.every)*cfg.max_strokes)%len(indices)
+    rotating=indices[(torch.arange(len(indices),device=target.device)+start)%len(indices)]
+    if cfg.hard_fraction==0:return rotating[:count]
+    with torch.no_grad():
+        if labels is None:
+            annotated=(target>.5)&(valid>.5)
+            labels=annotated.float().argmax(1).masked_fill(annotated.sum(1)!=1,-1)
+        p=output['probabilities'].detach().float()
+        known=(labels>=0)&(valid[:,0]>.5)
+        foreign=known[:,None]&(labels[:,None]!=torch.arange(p.shape[1],device=p.device)[None,:,None,None])
+        # A high score means this stroke confidently steals a DIFFERENT actual stroke's seed.
+        scores=p.masked_fill(~foreign,0).amax((-2,-1))
+        hard_count=min(count,max(1,int(count*cfg.hard_fraction)))
+        positions=scores[indices[:,0],indices[:,1]].topk(hard_count,sorted=False).indices
+        hard=indices[positions]
+        duplicate=(rotating[:,None,:]==hard[None,:,:]).all(-1).any(1)
+        return torch.cat((hard,rotating[~duplicate][:count-hard_count]),0)
+
+
+def balanced_seed_focal_loss(output,labels,gamma=2.):
+    """Focus actual annotated, present strokes; never invent a missing-stroke target."""
+    if not math.isfinite(gamma) or gamma<0:raise ValueError('gamma must be finite and nonnegative')
+    logits=output['logits'].float();valid=labels>=0;safe=labels.clamp_min(0)
+    log_true=logits.log_softmax(1).gather(1,safe[:,None]).squeeze(1)
+    log_true=torch.where(valid,log_true,torch.zeros_like(log_true))
+    values=-(1-log_true.exp()).clamp_min(1e-8).pow(gamma)*log_true
+    totals=logits.new_zeros(logits.shape[:2]).scatter_add_(1,safe.flatten(1),values.flatten(1))
+    counts=logits.new_zeros(logits.shape[:2]).scatter_add_(1,safe.flatten(1),valid.float().flatten(1))
+    present=counts>0
+    return ((totals/counts.clamp_min(1))*present).sum()/present.sum().clamp_min(1)
+
+
+def junction_discrepancy(output, target_masks, valid_pixels, cfg, step=0,labels=None):
     """Compare actual branch evidence; never force all strokes to have no branches.
 
     Rotate through at most max_strokes present annotations per application.
@@ -84,12 +125,9 @@ def junction_discrepancy(output, target_masks, valid_pixels, cfg, step=0):
     valid = valid_pixels.to(pred).detach()
     if target.shape != pred.shape or valid.shape != pred[:, :1].shape:
         raise ValueError('Junction targets/valid region must match prediction shapes')
-    eligible = output['active'] & ((target*valid).sum((-2,-1)) > 0)
-    indices = eligible.nonzero(as_tuple=False)
-    if not len(indices):
+    selected=select_junction_strokes(output,target,valid,cfg,step,labels)
+    if not len(selected):
         return pred.sum()*0
-    start = ((step//cfg.every)*cfg.max_strokes) % len(indices)
-    selected = indices[(torch.arange(min(cfg.max_strokes,len(indices)),device=pred.device)+start) % len(indices)]
     b, k = selected.unbind(1)
     p, t, v = pred[b,k,None], target[b,k,None], valid[b]
     # Ignore unknown-region boundaries and image edges at the operator's support.
@@ -112,6 +150,6 @@ def v2_topology_loss(output, labels, target_masks=None, valid_pixels=None, confi
         raise ValueError('Actual input masks and known-region metadata are required')
     # FP32 topology operators for stable differences, including under AMP.
     with torch.autocast(device_type=output['masks'].device.type, enabled=False):
-        junction = junction_discrepancy(output, target_masks, valid_pixels, cfg, step)
+        junction = junction_discrepancy(output, target_masks, valid_pixels, cfg, step,labels)
     return {**base, 'loss': base['loss']+cfg.weight*junction,
             'junction': junction, 'junction_applied': True}

@@ -86,10 +86,12 @@ def collate(samples):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, amp=False, amp_dtype=torch.float16):
+def evaluate(model, loader, device, amp=False, amp_dtype=torch.float16,return_details=False):
     """Macro Dice over annotated nonempty strokes, not padded channels."""
+    device=torch.device(device)
     total = torch.zeros((), device=device)
     count = torch.zeros((), device=device)
+    low_recall=torch.zeros((),device=device);minimum_recall=torch.ones((),device=device)
     model.eval()
     for batch in loader:
         image, ref, strokes, labels = [x.to(device, non_blocking=True) for x in batch[:4]]
@@ -99,12 +101,21 @@ def evaluate(model, loader, device, amp=False, amp_dtype=torch.float16):
         target = torch.nn.functional.one_hot(labels.clamp_min(0), strokes.shape[1]).permute(0, 3, 1, 2).bool() & known
         pred = torch.nn.functional.one_hot(prediction, strokes.shape[1]).permute(0, 3, 1, 2).bool() & known
         mass = target.sum((-2, -1))
-        dice = 2 * (target & pred).sum((-2, -1)).float() / (mass + pred.sum((-2, -1))).clamp_min(1)
+        intersection=(target & pred).sum((-2,-1)).float()
+        dice = 2 * intersection / (mass + pred.sum((-2, -1))).clamp_min(1)
         total += dice[mass > 0].sum()
         count += (mass > 0).sum()
+        if return_details:
+            recall=intersection/mass.clamp_min(1)
+            low_recall+=((recall<.1)&(mass>0)).sum()
+            minimum_recall=torch.minimum(minimum_recall,recall.masked_fill(mass==0,1).amin())
     if count.item() == 0:
         raise ValueError('Validation set has no labelled strokes')
-    return (total / count).item()
+    score=(total/count).item()
+    if return_details:
+        return dict(val_macro_dice=score,val_low_seed_recall_strokes=int(low_recall.item()),
+                    val_annotated_strokes=int(count.item()),val_minimum_seed_recall=minimum_recall.item())
+    return score
 
 
 def main():
@@ -122,6 +133,9 @@ def main():
     p.add_argument('--junction-weight', type=float, default=0., help='0: original V2; positive: same V2 plus junction loss')
     p.add_argument('--junction-every', type=int, default=4)
     p.add_argument('--junction-max-strokes', type=int, default=4)
+    p.add_argument('--junction-hard-fraction',type=float,default=0.)
+    p.add_argument('--seed-focal-weight',type=float,default=0.)
+    p.add_argument('--seed-focal-gamma',type=float,default=2.)
     p.add_argument('--ownership-weight', type=float, default=0., help='Optional cached weak-region CE; 0 disables')
     p.add_argument('--affinity-weight', type=float, default=0., help='Optional same-owner neighbour consistency')
     p.add_argument('--epoch-warning-seconds', type=float, default=None)
@@ -129,9 +143,11 @@ def main():
     args = p.parse_args()
     from dataclasses import asdict
     from .reference_v2_topology import (ARCHITECTURE, JunctionConfig, TopologyDataset,
-                                      collate_topology, v2_topology_loss)
+                                      collate_topology, v2_topology_loss, balanced_seed_focal_loss)
     junction_config = JunctionConfig(weight=args.junction_weight, every=args.junction_every,
-                                     max_strokes=args.junction_max_strokes)
+                                     max_strokes=args.junction_max_strokes,hard_fraction=args.junction_hard_fraction)
+    if any(not np.isfinite(v) or v<0 for v in (args.seed_focal_weight,args.seed_focal_gamma)):
+        raise ValueError('Seed focal weight/gamma must be finite and nonnegative')
     topology_enabled = args.junction_weight > 0
     refinement_enabled = args.ownership_weight > 0 or args.affinity_weight > 0
     if any(not np.isfinite(v) or v < 0 for v in (args.ownership_weight,args.affinity_weight)):
@@ -187,7 +203,7 @@ def main():
         import shutil
         shutil.copyfile(Path(args.manifest).parent/'preparation_report.json',
                         destination/'ownership_preparation_report.json')
-    architecture = ARCHITECTURE if topology_enabled or refinement_enabled else 'reference_v2'
+    architecture = ARCHITECTURE if topology_enabled or refinement_enabled or args.seed_focal_weight>0 else 'reference_v2'
     (destination / 'run_config.json').write_text(json.dumps({**vars(args), 'architecture': architecture,
         'junction_config': asdict(junction_config),
         'ownership_config': asdict(ownership_config) if refinement_enabled else None}, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -204,6 +220,7 @@ def main():
         junction_total = 0.
         junction_applications = 0
         ownership_total=0.;affinity_total=0.;batch_count=0
+        seed_focal_total=0.
         progress = tqdm(loaders['train'], desc=f'Epoch {epoch + 1}/{args.epochs}', mininterval=5)
         for batch in progress:
             data_seconds += time.perf_counter() - previous
@@ -224,6 +241,10 @@ def main():
                     loss = losses['loss']
                 else:
                     loss = partition_loss(output, labels)['loss']
+                if args.seed_focal_weight>0:
+                    seed_loss=balanced_seed_focal_loss(output,labels,args.seed_focal_gamma)
+                    loss=loss+args.seed_focal_weight*seed_loss
+                    seed_focal_total=seed_focal_total+seed_loss.detach()
                 if refinement_enabled:
                     owners,reliability=[x.to(device,non_blocking=True) for x in batch[6:8]]
                     refined=ownership_losses(output,owners,reliability,
@@ -244,7 +265,8 @@ def main():
             previous = time.perf_counter()
         train_seconds = time.perf_counter() - started
         print('Validation...', flush=True)
-        score = evaluate(model, loaders['val'], device, amp, amp_dtype)
+        validation = evaluate(model, loaders['val'], device, amp, amp_dtype,return_details=True)
+        score=validation['val_macro_dice']
         row = {'epoch': epoch + 1, 'train_loss': total / len(loaders['train'].dataset), 'val_macro_dice': score,
                'train_seconds': train_seconds, 'data_wait_seconds': data_seconds,
                'samples_per_second': len(loaders['train'].dataset) / train_seconds,
@@ -252,6 +274,8 @@ def main():
                'junction_applications': junction_applications, 'junction_cpu_dispatch_seconds': junction_seconds,
                'ownership_loss':float(ownership_total)/max(batch_count,1),
                'affinity_loss':float(affinity_total)/max(batch_count,1),
+               'seed_focal_loss':float(seed_focal_total)/max(batch_count,1),
+               **validation,
                'epoch_seconds': time.perf_counter() - started}
         history.append(row)
         print(json.dumps(row), flush=True)
@@ -265,6 +289,7 @@ def main():
                         'val_macro_dice': score, 'seed': args.seed,
                         'junction_config': asdict(junction_config),
                         'ownership_config': asdict(ownership_config) if refinement_enabled else None,
+                        'seed_focal_weight':args.seed_focal_weight,'seed_focal_gamma':args.seed_focal_gamma,
                         'ownership_weight':args.ownership_weight,'affinity_weight':args.affinity_weight}, destination / 'best.pt')
         (destination / 'history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
 

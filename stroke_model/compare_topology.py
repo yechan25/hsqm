@@ -23,7 +23,7 @@ def load_comparison_model(path,device):
     model=ReferenceStrokeModel(image_size=state['image_size'],width=state['width'],pretrained=False)
     model.load_state_dict(state['model'],strict=True)
     metadata={key:state.get(key) for key in ('architecture','image_size','epoch','ownership_weight',
-        'affinity_weight','ownership_config','junction_config')}
+        'affinity_weight','ownership_config','junction_config','seed_focal_weight','seed_focal_gamma')}
     return model.to(device).eval(),metadata
 
 
