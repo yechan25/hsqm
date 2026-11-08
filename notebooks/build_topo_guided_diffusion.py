@@ -24,7 +24,7 @@ VAE 샘플링과 잡음 추가까지 완료한 **동일한 초기 잠재값을 �
 미분해 잡음 예측을 보정합니다. U-Net을 통한 역전파와 모델 가중치 학습은 하지 않습니다.
 원본 점수가 주 손실을 대신하지 않습니다. 주변 잉크에는 작은 별도 보조 항만 적용합니다.
 
-보정량은 잡음 예측 RMS의 최대 5%에서 시작하며, 같은 시점의 손실이 내려가고
+보정량은 예상 완성 잠재값 RMS의 1%에서 시작하며, 같은 시점의 손실이 내려가고
 4글자의 평균 추출 획 점수가 낮아지지 않아야 채택합니다.
 연결 성분 분리·이진 윤곽 점수는 guidance에 사용하지 않습니다. 모델 체크포인트는 읽기만 합니다.
 
@@ -39,8 +39,8 @@ Colab GPU에서 실행하세요. 역전파가 추가되어 기존 생성보다 �
     setup=setup.replace('STRENGTHS = [.65, .85]','STRENGTHS = [.65]')
     setup+='''
 from diffusion_model.run_topo_guidance import generate_guided_pair, evaluate_topo_pair
-GUIDANCE = dict(noise_ratio=.05,start_fraction=.30,end_fraction=.90,
-                every=2,backtracks=2,snapshot_every=4)
+GUIDANCE = dict(clean_step_ratio=.01,start_fraction=.30,end_fraction=1.,
+                every=1,backtracks=2,snapshot_every=4)
 STRUCTURE_CONFIG = {}  # 기존 StrokeStructureLoss 기본 측정. 임의의 반복 상한으로 자르지 않습니다.
 EXTRA_AUX_WEIGHT = .05
 '''
@@ -69,9 +69,16 @@ plt.tight_layout();plt.show()
 print('채택된 guidance 단계:',generation['guided_accepted_steps'])
 print('동일한 시작 잠재값:',generation['initial_latent_sha256'])
 print('원본·예상 완성 이미지·보정 전후 손실:',OUTPUT_DIR)
+from diffusion_model.guidance_diagnostics import diagnose_pair
+diagnostic_summary,pixel_differences=diagnose_pair(OUTPUT_DIR,show=True)
+display(pixel_differences)
 ''')
     source(5,'''
 import pandas as pd
+from diffusion_model.guidance_diagnostics import diagnose_pair
+# 기존 실행 결과도 재생성 없이 PNG와 로그만 읽어 진단합니다.
+diagnostic_summary,pixel_differences=diagnose_pair(OUTPUT_DIR,show=True)
+display(pixel_differences)
 topo_scores,topo_extraction,debug_zip=evaluate_topo_pair(
     OUTPUT_DIR/'generation_report.json',CHECKPOINT,show=True)
 display(topo_scores[['method','slot','extracted_stroke_score_no_extra',

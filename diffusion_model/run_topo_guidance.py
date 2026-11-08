@@ -38,7 +38,8 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     if len(selected)!=4 or len(set(selected))!=4 or any(row not in catalog for row in selected):
         raise ValueError('Select exactly four distinct training-reference rows')
     if type(steps) is not int or steps<4:raise ValueError('Need at least four nominal steps')
-    config=GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or GuidanceConfig()
+    config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
+            GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1))
     structure=StructureConfig(**structure_config) if isinstance(structure_config,dict) else structure_config or StructureConfig()
     initial_image,slots=compose_sheet([catalog[row] for row in selected],canvas_size)
     destination=Path(output)
@@ -83,7 +84,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         primary_score='StructuralIndicator on extracted masks with extra_weight=0',
         gradient_path='clean latent -> fp32 VAE -> four torch crops -> frozen Topo -> stroke loss',
         unet_backward=False,weights_updated=False,denoise_eta=0.,cfg_scale=7.5,
-        vae_decode_dtype='float32',diffusers_version=diffusers.__version__,torch_version=torch.__version__,
+        vae_decode_dtype='float32',ddim_state_dtype='float32',
+        unet_dtype=str(next(pipe.unet.parameters()).dtype).replace('torch.',''),
+        diffusers_version=diffusers.__version__,torch_version=torch.__version__,
         prompt=prompt,negative_prompt=negative,scheduler=dict(pipe.scheduler.config),pages=[],results=[])
 
     def write_report():
@@ -133,6 +136,10 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         # Both receive copies of the same VAE-sampled, noised sheet; no re-seeding shortcut.
         for method,cfg in [('baseline',GuidanceConfig(noise_ratio=0)),('guided',config)]:
             latents,trace=denoise(pipe,initial,timesteps,embeddings,objective=objective,config=cfg,on_step=callback(method))
+            report[method+'_final_latent_sha256']=tensor_hash(latents)
+            if method=='baseline':baseline_final=latents.detach().float().cpu()
+            else:
+                report['final_latent_rms_difference']=float((latents.detach().float().cpu()-baseline_final).square().mean().sqrt())
             image,filtered=finish(latents);save_page(image,method,filtered)
             report[method+'_accepted_steps']=sum(row['accepted'] for row in trace)
         if tensor_hash(initial)!=initial_hash:raise RuntimeError('Initial latent changed')

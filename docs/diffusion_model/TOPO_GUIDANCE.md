@@ -41,16 +41,21 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
 `epsilon' = epsilon + positive_scale * g0`
 
 같은 zt에서 이 보정은 `z0' = z0 - sqrt((1-alpha_bar)/alpha_bar)*positive_scale*g0`가 되어
-예상 완성 잠재값의 손실 하강 방향이다. scale은 gradient RMS로 정규화한 뒤
-`noise_ratio*sin(schedule)*RMS(epsilon)`로 제한한다. 기본 noise_ratio=.05,
-실제 역확산 진행률 .30~.90의 매 2번째 단계만 적용한다.
+예상 완성 잠재값의 손실 하강 방향이다. 현재 notebook 기본값은
+`desired=.01*ramp*RMS(predicted_z0)*g0/RMS(g0)`를 정하고,
+`epsilon'=epsilon+sqrt(alpha_bar/(1-alpha_bar))*desired`로 변환한다.
+따라서 후반 잡음이 작아져도 예상 완성 잠재값의 수정 예산이 함께 사라지지 않는다.
+진행률 .30 이후부터 마지막 단계까지 매번 검사하며, 초기에는 보정량을 점차 늘린다.
+기존 `noise_ratio=.05` 모드도 `clean_step_ratio=None`으로 재현할 수 있다.
+이전보다 검사 횟수가 늘어 실행 시간이 길어질 수 있다.
 
 수정한 epsilon으로 DDIM의 실제 clean estimate를 다시 구하고 평가한다. 같은 시점의
-전체 손실이 낮아지고 4글자 평균 추출 획 점수가 낮아지지 않을 때만 채택한다.
+전체 손실이 낮아지고 4글자 평균 추출 획 점수가 낮아지지 않으며 실제 다음 상태가 변할 때만 채택한다.
 그렇지 않으면 보정량을 절반씩 줄여 최대 3번 검사하고, 모두 실패하면 기본 DDIM step을 쓴다.
 모든 채택/거부·기울기 크기·보정 크기·글자별 점수·손실을 기록한다.
 각 단계에서 그래프를 끊어 전체 trajectory를 역전파하지 않는다.
 
+DDIM 상태와 보정은 두 경로 모두 fp32로 누적하고 U-Net 입력만 모델 정밀도로 변환한다.
 VAE 인코딩은 기존 fp16 설정으로 한 번 수행하고, 이후 두 경로 모두 VAE decode를 fp32로
 진행해 입력 gradient 안정성을 높인다. 따라서 과거 fp16 PNG와 비트 단위 일치가 아니라
 이 실험의 baseline/guided 쌍을 비교한다. 이미지 범위 clamp 바깥에서는 구조 gradient가
@@ -64,6 +69,14 @@ thresholding=False만 지원한다. safety checker도 두 경로에 동일하게
 3. 학습 범위의 기준을 **정확히 4개** 선택.
 4. reference/baseline/guided 전체 이미지, 단계별 예상 완성 이미지, trace JSONL 저장.
 5. 추출 획 그림과 `topo_scores.csv`, slot별 guided-minus-baseline, 진단 ZIP 출력.
+
+4/5번 셀은 `diagnose_pair(OUTPUT)`도 실행한다. 기존 결과를 다시 생성하지 않고도
+PNG의 평균/최대 차이와 바뀐 픽셀 비율, 채택 단계의 획 손실/주변 잉크 보조항 감소를
+나눠 확인한다. 새 실행에서는 실제 다음 상태 변화 RMS와 최종 잠재값 차이도 기록한다.
+`paired_pixel_difference.png`는 차이를 확대 표시하며 개선 여부를 뜻하지 않는다.
+진단 수치는 `guidance_diagnostics.json`, 글자별 차이는 `pixel_differences.csv`에 저장한다.
+채택 횟수만으로 개선을 판단하지 않는다. 획 손실 변화가 작고 보조항만 줄었다면
+현재 추출 획 목적이 눈에 보이는 결함을 충분히 반영하는지 먼저 확인해야 한다.
 
 `generation_report.json`에는 timestep, initial latent hash, checkpoint hash/epoch,
 model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행 실패 시 상태와 오류를

@@ -99,10 +99,34 @@ class GuidedDDIMTests(unittest.TestCase):
         for row in accepted:
             self.assertLess(row['loss_after'],row['loss_before'])
             self.assertGreater(row['gradient_rms'],0)
+            self.assertGreater(row['state_delta_rms'],0)
         self.assertLess(self.objective(guided/2+.5)[0],self.objective(base/2+.5)[0])
         torch.testing.assert_close(self.initial,original,rtol=0,atol=0)
         self.assertTrue(all(p.grad is None for p in self.pipe.vae.parameters()))
         self.assertTrue(all(p.grad is None for p in self.pipe.unet.parameters()))
+
+    def test_clean_budget_corrects_the_final_step(self):
+        output,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=self.objective,config=GuidanceConfig(noise_ratio=0,clean_step_ratio=.01,
+                start_fraction=0,end_fraction=1,every=1))
+        final=trace[-1]
+        self.assertTrue(final['active'])
+        self.assertTrue(final['accepted'])
+        self.assertEqual(final['correction_budget'],'clean_latent_rms')
+        self.assertGreater(final['clean_delta_rms'],0)
+        self.assertGreater(final['state_delta_rms'],0)
+        self.assertLess(final['loss_after'],final['loss_before'])
+        self.assertTrue(torch.isfinite(output).all())
+
+    def test_half_unet_keeps_sampling_state_and_corrections_in_float32(self):
+        self.pipe.unet.half()
+        initial=self.initial.half()
+        output,trace=denoise(self.pipe,initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=self.objective,config=GuidanceConfig(noise_ratio=.05,start_fraction=0,end_fraction=1,every=1))
+        self.assertEqual(output.dtype,torch.float32)
+        accepted=[r for r in trace if r['accepted']]
+        self.assertTrue(accepted)
+        self.assertTrue(all(r['state_delta_rms']>0 for r in accepted))
 
     def test_missing_objective_cannot_silently_enable_guidance(self):
         with self.assertRaises(ValueError):
@@ -192,6 +216,11 @@ class GuidedDDIMTests(unittest.TestCase):
             self.assertIn('extracted_stroke_score_no_extra',frame)
             self.assertTrue(Path(zip_path).is_file())
             self.assertEqual(len(extraction['results']),12)
+            from diffusion_model.guidance_diagnostics import diagnose_pair
+            summary,pixels=diagnose_pair(root/'run',show=False)
+            self.assertEqual(summary['ddim_state_dtype'],'float32')
+            self.assertEqual(len(pixels),4)
+            self.assertIsNotNone(summary['final_latent_rms_difference'])
 
 
 if __name__=='__main__':unittest.main()
