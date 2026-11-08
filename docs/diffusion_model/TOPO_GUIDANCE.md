@@ -5,7 +5,7 @@
 고정 조건은 기존 SD1.5 epsilon U-Net, DDIM, 4개 기준의 576x576 공동 이미지,
 strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라 선택하는
 실제 timestep을 기록한다(기본 설정에서 19개). 같은 VAE 샘플링·잡음 추가 결과를 한 번
-만들어 baseline/guided에 복사하며, 초기 잠재값 SHA256을 저장한다. 별도로 seed만
+만들어 baseline/uniform_guided/guided에 복사하며, 초기 잠재값 SHA256을 저장한다. 별도로 seed만
 맞춰 두 번 인코딩하는 방식이 아니다. 모든 모델은 동결하고 optimizer를 만들지 않는다.
 
 ## 주 신호를 원래 추출 획 경로로 연결
@@ -14,8 +14,16 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
 
 - 예상 완성 이미지의 4개 고정 crop을 torch bilinear로 checkpoint 해상도로 내린다.
 - 실제 동결 Topo에 넣어 **soft masks**를 얻고, 기존 `StrokeStructureLoss`를 직접 호출한다.
-- 글자마다 획 평균을 구한 뒤 4글자 평균을 낸다.
-  `L_stroke=mean_k(missing+log1p(split/.2)+log1p(junction/.01))`.
+- 각 획의 `l_k=missing+log1p(split/.2)+log1p(junction/.01)`를 유지한다.
+  구조 설정의 가중치와 width 설정도 기존대로 적용한다.
+- 집중 보정은 `w_k=min(3,1+2*(1-stroke_score_k/100))`를 detach해 정한다.
+  `L_stroke=sum(w_k*l_k)/sum(w_k)`를 글자별로 구한 뒤 네 글자를 평균한다.
+  정상 획도 양의 비중을 유지하며 한 획의 비중이 무제한 커지지 않는다.
+- 각 단계의 원래 예상 완성 이미지에서 정한 가중치를 모든 backtracking 후보에
+  고정한다. 후보마다 가중치를 다시 계산해 서로 다른 목적함수를 비교하지 않는다.
+  다음 timestep에서는 새 예상 완성 이미지로 우선순위를 다시 정한다.
+- 균등 비교 경로는 `focus_strength=0`으로 모든 가중치를 1로 두며, 보정 예산과
+  일정, 채택 기준은 집중 보정과 같다. `compare_uniform=False`로 비교 경로를 생략할 수 있다.
 - 주 손실은 원본 직접 측정 점수로 대체하지 않는다. 소량의 원본 주변 잉크 보조항
   `.05*sum(foreground_ink*(1-reference_support))/reference_ink_mass`와 범위 밖 RGB
   손실 `.01*mean(relu(-rgb)^2+relu(rgb-1)^2)`만 별도로 더한다.
@@ -51,6 +59,9 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
 
 수정한 epsilon으로 DDIM의 실제 clean estimate를 다시 구하고 평가한다. 같은 시점의
 전체 손실이 낮아지고 4글자 평균 추출 획 점수가 낮아지지 않으며 실제 다음 상태가 변할 때만 채택한다.
+추가로 **보정 전 90점 이상인 각 획**이 1점 넘게 나빠지는 후보는 거부한다.
+`healthy_stroke_score`, `max_healthy_stroke_drop`으로 임계값을 명시한다.
+이는 같은 시점 후보 사이의 보호 조건이며, 최종 결과에서 누적 악화가 없다는 보장은 아니다.
 그렇지 않으면 보정량을 절반씩 줄여 최대 3번 검사하고, 모두 실패하면 기본 DDIM step을 쓴다.
 모든 채택/거부·기울기 크기·보정 크기·글자별 점수·손실을 기록한다.
 각 단계에서 그래프를 끊어 전체 trajectory를 역전파하지 않는다.
@@ -67,8 +78,19 @@ thresholding=False만 지원한다. safety checker도 두 경로에 동일하게
 1. GitHub 코드·라이브러리·Drive 연결.
 2. 기존 checkpoint와 기준 전용 준비(전체 학습 NPZ 변환 생략).
 3. 학습 범위의 기준을 **정확히 4개** 선택.
-4. reference/baseline/guided 전체 이미지, 단계별 예상 완성 이미지, trace JSONL 저장.
-5. 추출 획 그림과 `topo_scores.csv`, slot별 guided-minus-baseline, 진단 ZIP 출력.
+4. reference/baseline/uniform_guided/guided 전체 이미지, 단계별 예상 완성 이미지, trace JSONL 저장.
+5. 획별 점수·가중치·결함 지도·RGB 손실 기울기와 세 경로 점수 비교, 진단 ZIP 출력.
+
+`stroke_scores.csv`는 method/slot/stroke별 점수, 가중치, 비중, 개별 손실과 결함값을 담는다.
+`stroke_comparison.csv`는 동일 기준 획별 최종 점수와 guided-minus-baseline/uniform을 담는다.
+원래 `topo_scores.csv`의 글자 점수 공식은 바꾸지 않아 비교가 가능하다.
+`stroke_guidance_trace.csv`는 실제 guided 실행의 단계별 고정 가중치와 채택 전후 획 점수다.
+PNG/NPZ에는 누락·분리·정션 위치 지도와 각 획의 가중 손실 기여분을 RGB 입력에 미분한
+기울기를 저장한다. 기울기는 빨강=RGB를 낮춰 어둡게, 파랑=RGB를 높여 밝게 하는 하강
+방향이다. 그림마다 색 범위를 확대하므로 색 강도를 획 사이에서 직접 비교하지 않는다.
+이는 입력 이미지의 기울기 진단으로, VAE를 통과한 실제 잠재값 보정 이미지와는 다르다.
+최종 이미지에서 다시 산출한 가중치와 생성 당시 단계별 가중치를 구분한다.
+진단은 획별 역전파가 추가되므로 5번 셀도 기존보다 느릴 수 있다.
 
 4/5번 셀은 `diagnose_pair(OUTPUT)`도 실행한다. 기존 결과를 다시 생성하지 않고도
 PNG의 평균/최대 차이와 바뀐 픽셀 비율, 채택 단계의 획 손실/주변 잉크 보조항 감소를
@@ -90,6 +112,8 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 실제 Diffusers DDIM의 0-guidance 동일성, 보정 부호/손실 하강, 주 점수가 낮아지는 보정
 거부, 동결 가중치, 네 칸 입력 gradient, 동일 원본에서 Topo 배정만 바꿔도 손실이
 달라지는지 검사한다. 작은 실제 Diffusers U-Net/VAE로도 gradient 경로를 검사한다.
+문제 획의 비중 증가/상한/가중치 detach, 후보 가중치 고정, 평균 점수가 올라도 정상
+획이 악화되면 거부하는지, 동일 초기값의 세 경로와 획별 CSV/지도/gradient도 검사한다.
 작은 테스트용 네트워크와 사용자의 학습된 checkpoint에 대한 품질 검증은 구분한다.
 
 실제 pretrained SD1.5 + 사용자 Topo의 Colab GPU 실행/VRAM/최종 획 개선은 실행 후

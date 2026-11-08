@@ -20,6 +20,8 @@ class GuidanceConfig:
     every: int=2
     backtracks: int=2
     snapshot_every: int=4
+    healthy_stroke_score: float=90.
+    max_healthy_stroke_drop: float=1.
 
     def __post_init__(self):
         if (not math.isfinite(self.noise_ratio) or self.noise_ratio<0
@@ -28,7 +30,9 @@ class GuidanceConfig:
                 or not 0<=self.start_fraction<self.end_fraction<=1
                 or type(self.every) is not int or self.every<1
                 or type(self.backtracks) is not int or self.backtracks<0
-                or type(self.snapshot_every) is not int or self.snapshot_every<1):
+                or type(self.snapshot_every) is not int or self.snapshot_every<1
+                or not math.isfinite(self.healthy_stroke_score) or not 0<=self.healthy_stroke_score<=100
+                or not math.isfinite(self.max_healthy_stroke_drop) or self.max_healthy_stroke_drop<0):
             raise ValueError('Invalid guidance schedule')
 
 
@@ -38,9 +42,29 @@ def decode_estimate(pipe,z0):
     return decoded.float()/2+.5
 
 
+def _plain(value):
+    if torch.is_tensor(value):return value.detach().cpu().tolist()
+    if isinstance(value,dict):return {key:_plain(item) for key,item in value.items()}
+    if isinstance(value,(list,tuple)):return [_plain(item) for item in value]
+    return value
+
+
 def _scalar_rows(details):
-    return [{key:float(value.detach()) if torch.is_tensor(value) else value
-             for key,value in row.items()} for row in details['per_glyph']]
+    return _plain(details['per_glyph'])
+
+
+def _healthy_guard(before,after,config):
+    """Protect EACH previously healthy stroke, independent of sheet averages."""
+    drops=[]
+    for a,b in zip(before,after):
+        sa,sb=a.get('per_stroke',[]),b.get('per_stroke',[])
+        if len(sa)!=len(sb):raise ValueError('Candidate stroke identities changed')
+        for first,second in zip(sa,sb):
+            if first['stroke']!=second['stroke']:raise ValueError('Candidate stroke order changed')
+            if first['score']>=config.healthy_stroke_score:
+                drops.append(float(first['score']-second['score']))
+    drop=max([0.]+drops)
+    return drop<=config.max_healthy_stroke_drop+1e-5,drop
 
 
 def _mean_score(details):
@@ -89,6 +113,7 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
             norm=gradient.square().mean().sqrt()
             record.update(loss_before=float(loss.detach()),gradient_rms=float(norm),
                 topo_score_before=_mean_score(details),per_glyph_before=_scalar_rows(details),attempts=[])
+            priorities=objective.freeze_priority(details) if hasattr(objective,'freeze_priority') else None
             del loss,details,clean
             if norm>1e-12:
                 if config.clean_step_ratio is not None:
@@ -111,18 +136,23 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                         candidate_noise=(predicted.float()+correction*(.5**attempt)).to(predicted.dtype)
                         actual_delta=candidate_noise.float()-predicted.float()
                         candidate=scheduler.step(candidate_noise,t,latent,eta=0.,return_dict=True)
-                        after,after_details=objective(decode_estimate(pipe,candidate.pred_original_sample.float()))
+                        image=decode_estimate(pipe,candidate.pred_original_sample.float())
+                        after,after_details=(objective(image,stroke_weights=priorities) if priorities is not None
+                                             else objective(image))
                         if not torch.isfinite(after):raise FloatingPointError('Nonfinite candidate loss')
                         after_score=_mean_score(after_details)
                         score_ok=(record['topo_score_before'] is None or after_score>=record['topo_score_before']-1e-5)
+                        healthy_ok,healthy_drop=_healthy_guard(record['per_glyph_before'],
+                            _scalar_rows(after_details),config)
                         state_delta=float((candidate.prev_sample-original.prev_sample).square().mean().sqrt())
                         clean_delta=float((candidate.pred_original_sample-original.pred_original_sample).square().mean().sqrt())
                         reason=('loss_not_lower' if float(after)>=record['loss_before'] else
                                 'primary_score_lower' if not score_ok else
+                                'healthy_stroke_worse' if not healthy_ok else
                                 'no_state_change' if state_delta==0 else 'accepted')
                         record['attempts'].append(dict(attempt=attempt,loss_after=float(after),
                             topo_score_after=after_score,state_delta_rms=state_delta,
-                            clean_delta_rms=clean_delta,reason=reason))
+                            clean_delta_rms=clean_delta,max_healthy_stroke_drop=healthy_drop,reason=reason))
                         if reason=='accepted':
                             chosen=candidate
                             record.update(accepted=True,backtracks=attempt,loss_after=float(after),

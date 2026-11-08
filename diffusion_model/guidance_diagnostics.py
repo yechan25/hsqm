@@ -19,6 +19,20 @@ def diagnose_pair(output,show=True):
     trace_path=output/'trace_guided.jsonl'
     trace=[json.loads(line) for line in trace_path.read_text(encoding='utf-8').splitlines() if line.strip()]
     accepted=[r for r in trace if r['accepted']]
+    stroke_trace=[]
+    for record in trace:
+        after={row['slot']:row for row in record.get('per_glyph_after',[])}
+        for row in record.get('per_glyph_before',[]):
+            new={s['stroke']:s for s in after.get(row['slot'],{}).get('per_stroke',[])}
+            for stroke in row.get('per_stroke',[]):
+                changed=new.get(stroke['stroke'],{})
+                stroke_trace.append(dict(step=record['step']+1,timestep=record['timestep'],
+                    accepted=record['accepted'],slot=row['slot']+1,stroke=stroke['stroke'],
+                    score_before=stroke['score'],score_after=changed.get('score'),
+                    loss_before=stroke['loss'],loss_after=changed.get('loss'),
+                    weight=stroke['weight'],weight_share=stroke['weight_share']))
+    if stroke_trace:
+        pd.DataFrame(stroke_trace).to_csv(output/'stroke_guidance_trace.csv',index=False,encoding='utf-8-sig')
     mean=lambda values:float(np.mean(values)) if values else None
     gains=[]
     extra_gains=[]

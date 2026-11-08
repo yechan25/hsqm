@@ -26,6 +26,45 @@ class MaskModel(nn.Module):
 
 class TopoObjectiveTests(unittest.TestCase):
     def setUp(self):torch.set_num_threads(1)
+    def test_bad_stroke_receives_more_weight_and_candidates_keep_it_fixed(self):
+        strokes=np.zeros((2,24,24),np.float32)
+        strokes[0,4:7,3:20]=1;strokes[1,10:20,15:18]=1
+        reference=strokes.max(0)[None]
+        slots=[dict(reference=reference,strokes=strokes,bbox=[x,y,x+24,y+24])
+               for y in (0,24) for x in (0,24)]
+        cfg=StructureConfig(max_pairs=2,skeleton_iterations=2,junction_thresholds=(.5,),
+            junction_min_levels=1,junction_distance_steps=2,junction_angular_samples=16)
+        objective=TopoGuidance(MaskModel(),slots,cfg,extra_weight=0,
+                               focus_strength=2,max_stroke_weight=2)
+        ink=strokes[0]*.2+strokes[1]
+        crop=torch.from_numpy(1-ink)[None].repeat(3,1,1)
+        sheet=torch.cat([torch.cat([crop,crop],2)]*2,1)[None].requires_grad_(True)
+        focused,details=objective(sheet)
+        for row in details['per_glyph']:
+            bad,good=row['per_stroke']
+            self.assertLess(bad['score'],good['score'])
+            self.assertGreater(bad['weight'],good['weight'])
+            self.assertLessEqual(bad['weight'],2)
+            self.assertGreaterEqual(good['weight'],1)
+            self.assertFalse(bad['weight'].requires_grad)
+            self.assertAlmostEqual(float(bad['weight_share']+good['weight_share']),1)
+        frozen=objective.freeze_priority(details)
+        normal_crop=torch.from_numpy(1-reference).repeat(3,1,1)
+        normal=torch.cat([torch.cat([normal_crop,normal_crop],2)]*2,1)[None]
+        _,candidate=objective(normal,stroke_weights=frozen)
+        self.assertEqual(frozen,objective.freeze_priority(candidate))
+        gradient,=torch.autograd.grad(focused,sheet)
+        self.assertTrue(torch.isfinite(gradient).all())
+        objective.focus_strength=0
+        uniform,uniform_details=objective(sheet)
+        self.assertGreater(float(focused.detach()),float(uniform.detach()))
+        uniform_gradient,=torch.autograd.grad(uniform,sheet)
+        # Focus must actually strengthen the bad stroke's image gradient.
+        self.assertGreater(float(gradient[...,4:7,3:20].abs().sum()),
+                           float(uniform_gradient[...,4:7,3:20].abs().sum()))
+        for row in uniform_details['per_glyph']:
+            self.assertAlmostEqual(float(row['stroke_loss'].detach()),float(row['uniform_stroke_loss'].detach()))
+
     def test_all_four_crops_have_gradients_and_model_weights_are_frozen(self):
         strokes=np.zeros((2,24,24),np.float32)
         strokes[0,4:7,3:20]=1;strokes[1,10:20,15:18]=1
@@ -143,6 +182,22 @@ class GuidedDDIMTests(unittest.TestCase):
         self.assertFalse(any(row['accepted'] for row in trace))
         torch.testing.assert_close(output,base,rtol=0,atol=0)
 
+    def test_healthy_stroke_guard_rejects_even_when_average_score_improves(self):
+        def conflict(rgb):
+            loss=(rgb-.3).square().mean()
+            healthy=95+10*loss;bad=50-30*loss
+            return loss,dict(per_glyph=[dict(slot=0,extracted_stroke_score_no_extra=(healthy+bad)/2,
+                per_stroke=[dict(stroke=1,score=healthy),dict(stroke=2,score=bad)])])
+        base,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(noise_ratio=0))
+        output,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=conflict,config=GuidanceConfig(noise_ratio=.2,start_fraction=0,end_fraction=1,
+                every=1,max_healthy_stroke_drop=0))
+        self.assertFalse(any(r['accepted'] for r in trace))
+        reasons=[a['reason'] for r in trace if r['active'] for a in r['attempts']]
+        self.assertIn('healthy_stroke_worse',reasons)
+        torch.testing.assert_close(output,base,rtol=0,atol=0)
+
     def test_actual_tiny_diffusers_unet_and_vae_backward(self):
         from diffusers import UNet2DConditionModel,AutoencoderKL
         torch.manual_seed(17)
@@ -212,15 +267,36 @@ class GuidedDDIMTests(unittest.TestCase):
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')
             with patch('diffusion_model.run_topo_guidance.load_topology',return_value=(model,24,1)):
                 frame,extraction,zip_path=evaluate_topo_pair(root/'run/generation_report.json',checkpoint,show=False)
-            self.assertEqual(len(frame),12)
+            self.assertEqual(len(frame),16)
             self.assertIn('extracted_stroke_score_no_extra',frame)
             self.assertTrue(Path(zip_path).is_file())
-            self.assertEqual(len(extraction['results']),12)
+            self.assertEqual(len(extraction['results']),16)
+            self.assertEqual({p['method'] for p in report['pages']},
+                             {'reference','baseline','uniform_guided','guided'})
+            self.assertEqual(report['stroke_focus']['focus_strength'],2.)
+            import pandas as pd
+            scores=pd.read_csv(Path(zip_path).parent/'stroke_scores.csv')
+            self.assertEqual(len(scores),32)
+            self.assertTrue((Path(zip_path).parent/'stroke_comparison.csv').is_file())
+            with np.load(extraction['results'][-1]['npz']) as arrays:
+                self.assertEqual(arrays['stroke_rgb_gradients'].shape,(2,24,24))
+                self.assertTrue(np.isfinite(arrays['stroke_rgb_gradients']).all())
+                self.assertEqual(arrays['missing_maps'].shape,(2,24,24))
+            accepted=[json.loads(s) for s in (root/'run/trace_guided.jsonl').read_text().splitlines()
+                      if json.loads(s)['accepted']]
+            self.assertTrue(accepted)
+            for record in accepted:
+                before=[s['weight'] for r in record['per_glyph_before'] for s in r['per_stroke']]
+                after=[s['weight'] for r in record['per_glyph_after'] for s in r['per_stroke']]
+                self.assertEqual(before,after)
             from diffusion_model.guidance_diagnostics import diagnose_pair
             summary,pixels=diagnose_pair(root/'run',show=False)
             self.assertEqual(summary['ddim_state_dtype'],'float32')
             self.assertEqual(len(pixels),4)
             self.assertIsNotNone(summary['final_latent_rms_difference'])
+            history=pd.read_csv(root/'run/stroke_guidance_trace.csv')
+            self.assertEqual(len(history),8)
+            self.assertTrue(history['accepted'].all())
 
 
 if __name__=='__main__':unittest.main()
