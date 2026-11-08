@@ -104,19 +104,25 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     # Encoding stays identical to ordinary fp16 img2img. Decode BOTH runs in fp32
     # for stable VAE/Topo input gradients; compare these paired runs, not old PNGs.
     pipe.vae.to(dtype=torch.float32)
-    objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
-        appearance_weight=appearance_weight,appearance_config=appearance,mask_gradient=mask_gradient,
-        source_spill_weight=source_spill_weight,direct_reference=direct_reference).to(device).eval()
-    calibration=[]
+    # The descriptor path does not need the legacy unbranched-skeleton metric.
+    # Keep its validation intact for modes that actually use it.
+    objective=None;calibration=[]
     reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
-    if appearance_target=='extractor_reference':
-        calibration=objective.calibrate_appearance(reference_rgb)
-    else:objective.set_reference_sheet(reference_rgb)
-    del reference_rgb
-    guiding_objective=objective
     if guidance_signal=='template_structure':
         from stroke_model.template_structure_guidance import TemplateStructureGuidance
+        from stroke_model.source_ink_guard import SourceInkGuard
         guiding_objective=TemplateStructureGuidance(model,slots).to(device).eval()
+        source_guard=SourceInkGuard(reference_rgb).to(device)
+    else:
+        objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
+            appearance_weight=appearance_weight,appearance_config=appearance,mask_gradient=mask_gradient,
+            source_spill_weight=source_spill_weight,direct_reference=direct_reference).to(device).eval()
+        if appearance_target=='extractor_reference':
+            calibration=objective.calibrate_appearance(reference_rgb)
+        else:objective.set_reference_sheet(reference_rgb)
+        source_guard=objective.source_guard
+        guiding_objective=objective
+    del reference_rgb
     destination.mkdir(parents=True,exist_ok=False)
     if init_mode=='external':starting_image.save(destination/'external_input.png')
     checkpoint_hash=_file_hash(checkpoint)
@@ -170,7 +176,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         report['pages'].append(page)
         rgb=torch.from_numpy(np.asarray(image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
         with torch.no_grad():
-            source=objective.source_guard(rgb)
+            source=source_guard(rgb)
             if guidance_signal=='template_structure':
                 value,detail=guiding_objective(rgb)
                 report.setdefault('structure_audit',{})[method]=dict(loss=float(value),
@@ -231,8 +237,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         if compare_structure and appearance_weight>0:methods.append(('structure_guided',config))
         methods.append(('guided',config))
         for method,cfg in methods:
-            objective.focus_strength=0. if method=='uniform_guided' else focus['focus_strength']
-            objective.appearance_weight=appearance_weight if method=='guided' else 0.
+            if objective is not None:
+                objective.focus_strength=0. if method=='uniform_guided' else focus['focus_strength']
+                objective.appearance_weight=appearance_weight if method=='guided' else 0.
             latents,trace=denoise(pipe,initial,timesteps,embeddings,objective=guiding_objective,config=cfg,on_step=callback(method))
             report[method+'_final_latent_sha256']=tensor_hash(latents)
             if method=='baseline':baseline_final=latents.detach().float().cpu()
@@ -248,7 +255,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     except Exception as exc:
         report.update(status='failed',error=repr(exc));write_report();raise
     finally:
-        del objective,model,pipe
+        del guiding_objective,source_guard,objective,model,pipe
         gc.collect();torch.cuda.empty_cache()
     return report
 
