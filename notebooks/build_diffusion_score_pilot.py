@@ -123,18 +123,7 @@ generation['data_preparation'] = preparation
 print('생성 원본과 점수 입력:', OUTPUT_DIR)
 # 함수 밖에 생성 파이프라인을 보관하지 않습니다. 다음 셀에서 GPU 메모리를 회수합니다.
 ''')
-    cell('code', '''
-result, scores = score_pilot(OUTPUT_DIR/'generation_report.json', CHECKPOINT,
-    score_config=SCORE_CONFIG, source_config=SOURCE_CONFIG, show=True)
-display(scores)
-print('원본과 추출 그림을 보고 감점이 실제 획 오류와 맞는지 확인하세요.')
-print('점수 계산 성공만으로 평가 정확도를 입증하지 않습니다.')
-from google.colab import files
-download = widgets.Button(description='진단 ZIP 다운로드')
-debug_path = result['debug_zip']
-download.on_click(lambda _, path=debug_path: files.download(path))
-display(download)
-''')
+    cell('code', (ROOT/'notebooks/diffusion_score_diagnostics_cell.py').read_text(encoding='utf-8'))
     notebook = dict(cells=cells, metadata=dict(
         kernelspec=dict(display_name='Python 3', language='python', name='python3'),
         accelerator='GPU', colab=dict(name='확산_생성_글자_점수_시험.ipynb')),
