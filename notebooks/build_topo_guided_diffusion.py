@@ -16,7 +16,9 @@ def build_guided():
     source(0,'''# 원본 기반 국소 역확산 편집 (실험)
 
 기존 Topo는 사후 획 평가에 사용합니다. 보정은 기준과 비교한 삭제/복원/보호 지도에서 직접 계산합니다.
-후반부 첫 편집 단계에서 지도를 고정하고, 각 단계에서 24회 잠재값을 수정합니다.
+기본 STEPS=60으로 실제 역확산을 39단계 수행합니다(strength=0.65). 이전 19단계보다 늘렸습니다.
+후반부 첫 편집 단계에서 지도를 고정하고, 최대 14개 보정 단계마다 24회 잠재값을 수정합니다.
+정상 획 보호 한도와 한 번의 보정량은 기존대로이며, 실행 시간은 늘어납니다.
 보호 영역의 평균/국소 변화와 잠재값 이동 예산을 제한합니다. 전체 추출 점수 상승은 채택 조건이 아닙니다.
 기준과 생성물의 위치가 맞는 조건을 전제로 하며, 폰트·정렬 차이도 편집 대상으로 잡힐 수 있습니다.
 실제 SD 생성 개선은 실행 후 확인해야 합니다. 새 체크포인트를 학습한 모델은 아닙니다.
@@ -25,6 +27,7 @@ def build_guided():
 삭제·복원·보호 지도는 local_erase.png / local_fill.png / local_protect.png로 저장됩니다.
 ''')
     setup=''.join(notebook['cells'][2]['source'])
+    setup=setup.replace('STEPS = 30','STEPS = 60  # strength=.65에서 실제 역확산 39단계')
     setup=setup.replace('GLYPH_COUNTS = [1, 4, 9]','GLYPH_COUNTS = [4]')
     setup=setup.replace('STRENGTHS = [.65, .85]','STRENGTHS = [.65]')
     setup+='''
@@ -75,6 +78,7 @@ for ax,page in zip(axes,generation['pages']):
     with Image.open(page['input']) as image:ax.imshow(image.convert('RGB'))
     ax.set_title(page['method']);ax.axis('off')
 plt.tight_layout();plt.show()
+print('실제 역확산 단계:',generation['effective_steps'])
 print('채택된 guidance 단계:',generation['guided_accepted_steps'])
 print('baseline=보정 없음 / guided=국소 삭제·복원 반복 보정')
 for name in ('erase','fill','protect'):

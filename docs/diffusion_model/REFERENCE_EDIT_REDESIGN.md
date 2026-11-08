@@ -52,3 +52,8 @@ local_reference_edit.py와 GuidanceConfig(local_edit=True)를 추가했다. 현�
 Archive guidance_debug (4).zip: 7/7 active steps accepted. In the largest erase component of the first glyph (511 pixels), mean ink fell from 0.80324 to 0.21437 and pixels above 0.5 ink fell from 427 to 12. The final native excess-ink guard still failed (0.003706 versus 0.002); this is not a complete success. Later fixed-size optimizer candidates repeatedly exceeded the protected local peak bound.
 
 The optimizer now backtracks up to six halvings from its last feasible state. Both edit error and the protected objective must decrease, within the unchanged protection/latent limits. Rejected states are no longer used as the next iterate. Logs include attempt size and backtrack index. This is a targeted experimental refinement; no GPU comparison against round 4 has been performed locally.
+
+
+## Extended denoising preset
+
+The guided notebook now sets STEPS=60 (previously 30). With strength=0.65, Diffusers uses 39 actual DDIM timesteps instead of 19. Keeping start_fraction=0.65 and every=1 yields 14 active edit opportunities instead of 7; each retains its 24-iteration maximum, backtracking, and unchanged protection limits. Seed remains 100, and baseline/guided share the same initial latent within the new run. Different timestep grids can change the start noise level, so old 30-step outputs are not an exact matched-start ablation. The notebook prints the actual step count; generation_report.json retains exact timesteps and the configuration. More denoising provides more opportunities and costs more time; improved removal is not yet GPU-validated.
