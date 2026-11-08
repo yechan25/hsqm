@@ -122,6 +122,20 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 기준 스타일 복사, 원본 글자 결함을 시각/독립 원본 검사로 함께 확인해야 한다.
 최근 추가한 이진 윤곽/성분 진단은 이 guidance 손실에 포함하지 않는다.
 
+### 보정이 약할 때: 손실의 민감도부터 구분
+
+`python tests/diagnose_guidance_sensitivity.py`는 실제 기본 구조 손실에 이상적인
+단일 획 마스크를 넣어, 원형/두께 3배/작은 돌출/작은 패임/끊김을 비교한다.
+이 고정 예시에서는 원형뿐 아니라 두께 3배·작은 돌출·작은 패임도 주 점수 100,
+손실 0, 마스크 기울기 0이다. 반면 끊김에는 양의 손실과 기울기가 생긴다.
+출력은 `outputs/guidance_sensitivity/sensitivity.json`과 PNG다.
+이는 추출을 완벽하게 해도 구조 손실 자체에 검출하지 못하는 변형이 있음을 보여주며,
+사용자의 실제 생성 결과에서 같은 원인이 발생했다는 판정은 아니다.
+주변 잉크 보조항을 뺀 주 신호만 분리해 검사한다. 전체 guidance의 기울기가 항상
+0이라는 의미도 아니다. 검출되지 않는 결함에는 획 가중치를 높여도 새 수정 방향이
+생기지 않는다. 실제 로그의 획 손실·보조항 감소와 채택/거부 사유를 함께 보고,
+필요하면 미분 가능한 획 윤곽/두께 보조 손실을 별도 실험해야 한다.
+
 참고: [Universal Guidance](https://arxiv.org/abs/2302.07121),
 [Diffusers 0.35.1 img2img](https://github.com/huggingface/diffusers/blob/v0.35.1/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_img2img.py),
 [DDIM](https://github.com/huggingface/diffusers/blob/v0.35.1/src/diffusers/schedulers/scheduling_ddim.py).
