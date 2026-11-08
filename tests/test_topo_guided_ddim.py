@@ -218,6 +218,35 @@ class GuidedDDIMTests(unittest.TestCase):
         self.assertTrue(any(row['accepted'] for row in trace))
         self.assertTrue(all(p.grad is None for p in self.pipe.vae.parameters()))
 
+    def test_appearance_signal_survives_ddim_when_structure_is_already_good(self):
+        from test_stroke_appearance import IdealSingleStroke
+        ref=np.zeros((1,24,24),np.float32);ref[:,10:13,4:20]=1
+        slots=[dict(reference=ref,strokes=ref,bbox=[x,y,x+24,y+24]) for y in (0,24) for x in (0,24)]
+        small=StructureConfig(max_pairs=2,skeleton_iterations=2,junction_thresholds=(.5,),
+            junction_min_levels=1,junction_distance_steps=2,junction_angular_samples=16)
+        objective=TopoGuidance(IdealSingleStroke(),slots,small,extra_weight=0,focus_strength=2,appearance_weight=.5)
+        ink=ref[0]*.6+.2;ink[9,10:15]=.8
+        crop=torch.from_numpy(1-2*ink)[None].repeat(3,1,1)
+        initial=torch.cat([torch.cat([crop,crop],2)]*2,1)[None]
+        self.pipe.unet.scale.fill_(0.)
+        self.pipe.scheduler.set_timesteps(4)
+        base,_=denoise(self.pipe,initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(noise_ratio=0))
+        guided,trace=denoise(self.pipe,initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=objective,config=GuidanceConfig(clean_step_ratio=.01,start_fraction=0,end_fraction=1,every=1))
+        accepted=[r for r in trace if r['accepted']]
+        self.assertTrue(accepted)
+        self.assertGreater(float((guided-base).abs().sum()),0)
+        with torch.no_grad():
+            _,baseline_details=objective(base/2+.5)
+            _,guided_details=objective(guided/2+.5)
+        before=sum(float(r['appearance_loss']) for r in baseline_details['per_glyph'])
+        after=sum(float(r['appearance_loss']) for r in guided_details['per_glyph'])
+        self.assertLess(after,before)
+        for record in accepted:
+            for a,b in zip(record['per_glyph_before'],record['per_glyph_after']):
+                self.assertLess(b['appearance_loss'],a['appearance_loss'])
+
     def test_paired_runner_saves_same_start_and_primary_mask_scores(self):
         import matplotlib
         matplotlib.use('Agg')
@@ -259,7 +288,7 @@ class GuidedDDIMTests(unittest.TestCase):
                  patch('diffusers.StableDiffusionImg2ImgPipeline',fake_class), \
                  patch('diffusion_model.run_topo_guidance.load_topology',return_value=(model,24,1)):
                 report=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'run',steps=8,
-                    canvas_size=48,structure_config=asdict(small),guidance=dict(noise_ratio=.1))
+                    canvas_size=48,structure_config=asdict(small),guidance=dict(noise_ratio=.1),compare_uniform=True)
             self.assertEqual(report['status'],'complete')
             self.assertEqual(pipe.encoder_calls,1)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
@@ -267,21 +296,26 @@ class GuidedDDIMTests(unittest.TestCase):
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')
             with patch('diffusion_model.run_topo_guidance.load_topology',return_value=(model,24,1)):
                 frame,extraction,zip_path=evaluate_topo_pair(root/'run/generation_report.json',checkpoint,show=False)
-            self.assertEqual(len(frame),16)
+            self.assertEqual(len(frame),20)
             self.assertIn('extracted_stroke_score_no_extra',frame)
             self.assertTrue(Path(zip_path).is_file())
-            self.assertEqual(len(extraction['results']),16)
+            self.assertEqual(len(extraction['results']),20)
             self.assertEqual({p['method'] for p in report['pages']},
-                             {'reference','baseline','uniform_guided','guided'})
+                             {'reference','baseline','uniform_guided','structure_guided','guided'})
+            self.assertEqual(report['appearance_weight'],.5)
+            self.assertEqual(next(p for p in report['pages'] if p['method']=='structure_guided')['appearance_weight'],0)
             self.assertEqual(report['stroke_focus']['focus_strength'],2.)
             import pandas as pd
             scores=pd.read_csv(Path(zip_path).parent/'stroke_scores.csv')
-            self.assertEqual(len(scores),32)
+            self.assertEqual(len(scores),40)
+            self.assertTrue((Path(zip_path).parent/'appearance_comparison.csv').is_file())
+            self.assertIn('appearance_loss',scores)
             self.assertTrue((Path(zip_path).parent/'stroke_comparison.csv').is_file())
             with np.load(extraction['results'][-1]['npz']) as arrays:
                 self.assertEqual(arrays['stroke_rgb_gradients'].shape,(2,24,24))
                 self.assertTrue(np.isfinite(arrays['stroke_rgb_gradients']).all())
                 self.assertEqual(arrays['missing_maps'].shape,(2,24,24))
+                self.assertEqual(arrays['contour_map'].shape,(2,24,24))
             accepted=[json.loads(s) for s in (root/'run/trace_guided.jsonl').read_text().splitlines()
                       if json.loads(s)['accepted']]
             self.assertTrue(accepted)

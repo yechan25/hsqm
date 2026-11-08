@@ -26,21 +26,27 @@ def diagnose_pair(output,show=True):
             new={s['stroke']:s for s in after.get(row['slot'],{}).get('per_stroke',[])}
             for stroke in row.get('per_stroke',[]):
                 changed=new.get(stroke['stroke'],{})
-                stroke_trace.append(dict(step=record['step']+1,timestep=record['timestep'],
+                entry=dict(step=record['step']+1,timestep=record['timestep'],
                     accepted=record['accepted'],slot=row['slot']+1,stroke=stroke['stroke'],
                     score_before=stroke['score'],score_after=changed.get('score'),
                     loss_before=stroke['loss'],loss_after=changed.get('loss'),
-                    weight=stroke['weight'],weight_share=stroke['weight_share']))
+                    weight=stroke['weight'],weight_share=stroke['weight_share'])
+                for key in ('structure_loss','appearance_loss','contour','local_mass'):
+                    entry[key+'_before']=stroke.get(key)
+                    entry[key+'_after']=changed.get(key)
+                stroke_trace.append(entry)
     if stroke_trace:
         pd.DataFrame(stroke_trace).to_csv(output/'stroke_guidance_trace.csv',index=False,encoding='utf-8-sig')
     mean=lambda values:float(np.mean(values)) if values else None
     gains=[]
     extra_gains=[]
+    appearance_gains=[]
     for row in accepted:
         before,after=row.get('per_glyph_before',[]),row.get('per_glyph_after',[])
         if before and after:
             gains.append(mean([a['stroke_loss']-b['stroke_loss'] for a,b in zip(before,after) if 'stroke_loss' in a]))
             extra_gains.append(mean([a['extra_auxiliary']-b['extra_auxiliary'] for a,b in zip(before,after) if 'extra_auxiliary' in a]))
+            appearance_gains.append(mean([a['appearance_loss']-b['appearance_loss'] for a,b in zip(before,after) if 'appearance_loss' in a]))
     summary=dict(accepted_steps=len(accepted),active_steps=sum(r['active'] for r in trace),
         identical_pngs=bool(not difference.any()),png_mae_255=float(difference.mean()),
         maximum_channel_difference_255=float(difference.max()),
@@ -48,6 +54,7 @@ def diagnose_pair(output,show=True):
         mean_accepted_proxy_loss_drop=mean([r['loss_before']-r['loss_after'] for r in accepted]),
         mean_accepted_stroke_loss_drop=mean([v for v in gains if v is not None]),
         mean_accepted_extra_auxiliary_drop=mean([v for v in extra_gains if v is not None]),
+        mean_accepted_appearance_loss_drop=mean([v for v in appearance_gains if v is not None]),
         mean_state_delta_rms=mean([r['state_delta_rms'] for r in accepted if 'state_delta_rms' in r]),
         mean_state_change_to_base_step_ratio=mean([r['state_change_to_base_step_ratio'] for r in accepted if 'state_change_to_base_step_ratio' in r]),
         ddim_state_dtype=report.get('ddim_state_dtype','not recorded in this older run'),
@@ -77,6 +84,7 @@ def diagnose_pair(output,show=True):
     print('값이 달라진 픽셀 비율(%):',summary['changed_pixel_percent'])
     print('평균 추출 획 손실 감소:',summary['mean_accepted_stroke_loss_drop'])
     print('평균 주변 잉크 보조항 감소:',summary['mean_accepted_extra_auxiliary_drop'])
+    print('평균 윤곽·국소 잉크량 오차 감소:',summary['mean_accepted_appearance_loss_drop'])
     print('평균 실제 다음 상태 변화 RMS:',summary['mean_state_delta_rms'])
     if summary['mean_state_delta_rms'] is None:
         print('이전 실행 로그에는 실제 상태 변화량이 없습니다. 기존 PNG 차이는 위에서 확인할 수 있습니다.')

@@ -9,17 +9,23 @@ from scipy.ndimage import distance_transform_edt
 from .stroke_structure import StrokeStructureLoss, StructureConfig
 from .structural_indicator import StructuralIndicator, IndicatorConfig
 from .source_quality_v5 import foreground_evidence
+from .stroke_appearance import StrokeAppearanceLoss,AppearanceConfig
 
 
 class TopoGuidance(nn.Module):
     def __init__(self, model, slots, structure_config=None, extra_weight=.05, range_weight=.01,
-                 focus_strength=0., max_stroke_weight=3.):
+                 focus_strength=0., max_stroke_weight=3.,appearance_weight=0.,appearance_config=None):
         super().__init__()
         if len(slots)!=4:raise ValueError('This experiment requires exactly four glyph slots')
         self.model=model.eval().requires_grad_(False)
         self.slots=slots
         self.structure_config=structure_config or StructureConfig()
         self.metrics=nn.ModuleList()
+        self.appearance_metrics=nn.ModuleList()
+        self.appearance_config=appearance_config or AppearanceConfig()
+        self.appearance_weight=float(appearance_weight)
+        if not math.isfinite(self.appearance_weight) or self.appearance_weight<0:
+            raise ValueError('Appearance weight must be finite and nonnegative')
         self.extra_weight=float(extra_weight)
         self.range_weight=float(range_weight)
         self.focus_strength=float(focus_strength)
@@ -39,6 +45,10 @@ class TopoGuidance(nn.Module):
             support=np.minimum(support/(1/(1+np.exp(-6.))),1).astype(np.float32)
             self.register_buffer(f'support_{i}',torch.from_numpy(support)[None,None])
             self.metrics.append(StrokeStructureLoss(strokes,self.structure_config))
+            # Topo partitions ink among strokes. Overlap must not demand two
+            # fully opaque strokes at the same pixel, which is unattainable.
+            target=strokes/np.maximum(strokes.sum(0,keepdims=True),1e-6)*ref
+            self.appearance_metrics.append(StrokeAppearanceLoss(target,self.appearance_config))
 
     @staticmethod
     def freeze_priority(details):
@@ -68,34 +78,45 @@ class TopoGuidance(nn.Module):
             values=measured['per_stroke']
             missing=values['missing'].mean()
             cfg=self.structure_config
-            per_loss=(cfg.missing_weight*values['missing']+cfg.split_weight*torch.log1p(values['split']/.2)
+            structure_loss=(cfg.missing_weight*values['missing']+cfg.split_weight*torch.log1p(values['split']/.2)
                       +cfg.junction_weight*torch.log1p(values['junction']/.01)+cfg.width_weight*values['width'])
+            appearance=self.appearance_metrics[i](prediction['masks'].float(),return_maps=return_masks)
+            per_loss=structure_loss+self.appearance_weight*appearance['loss']
             scoring=self.scorer(values['missing'],values['split'],values['junction'],extra=0.)
             scores=scoring['stroke_scores']
-            weights=(1+self.focus_strength*(1-scores.detach()/100)).clamp(1,self.max_stroke_weight)
+            severity=1-scores.detach()/100
+            if self.appearance_weight>0:
+                severity=torch.maximum(severity,1-torch.exp(-appearance['loss'].detach()/self.appearance_config.priority_scale))
+            weights=(1+self.focus_strength*severity).clamp(1,self.max_stroke_weight)
             if stroke_weights is not None:
                 weights=torch.as_tensor(stroke_weights[i],device=per_loss.device,dtype=per_loss.dtype)[None].detach()
                 if weights.shape!=per_loss.shape or not torch.isfinite(weights).all() or (weights<=0).any():
                     raise ValueError('Frozen stroke weights must be positive and match the stroke count')
             contributions=weights*per_loss/weights.sum(1,keepdim=True)
-            stroke_loss=contributions.sum(1).mean()
+            guidance_stroke_loss=contributions.sum(1).mean()
+            stroke_loss=(weights*structure_loss).sum()/weights.sum()
             # Separate weak source-ink auxiliary, never substituted for Topo loss.
             evidence=foreground_evidence(ink)
             extra=(evidence*(1-getattr(self,f'support_{i}'))).sum()/ref.sum().clamp_min(1)
-            losses.append(stroke_loss+self.extra_weight*extra)
+            losses.append(guidance_stroke_loss+self.extra_weight*extra)
             score=scoring['score'][0]
             per_stroke=[dict(stroke=k+1,score=scores[0,k],weight=weights[0,k],
                 weight_share=weights[0,k]/weights.sum(),loss=per_loss[0,k],
+                structure_loss=structure_loss[0,k],appearance_loss=appearance['loss'][0,k],
+                contour=appearance['contour'][0,k],local_mass=appearance['local_mass'][0,k],
                 contribution=contributions[0,k]/len(self.slots),
                 **{name:values[name][0,k] for name in ('missing','split','junction','width')})
                 for k in range(per_loss.shape[1])]
             row=dict(slot=i,stroke_loss=stroke_loss,missing=missing,
                 split=values['split'].mean(),junction=values['junction'].mean(),
-                uniform_stroke_loss=per_loss.mean(),per_stroke=per_stroke,
+                uniform_stroke_loss=structure_loss.mean(),guidance_stroke_loss=guidance_stroke_loss,
+                appearance_loss=appearance['loss'].mean(),contour=appearance['contour'].mean(),
+                local_mass=appearance['local_mass'].mean(),per_stroke=per_stroke,
                 extra_auxiliary=extra,extracted_stroke_score_no_extra=score)
             if return_masks:
                 row.update(image=ink,soft_masks=prediction['masks'],probabilities=prediction['probabilities'],
                            defect_maps=measured['maps'])
+                row['appearance_maps']={name:appearance[name] for name in ('contour_map','local_mass_map')}
             rows.append(row)
         loss=torch.stack(losses).mean()+self.range_weight*range_loss
         return loss,dict(per_glyph=rows,range_loss=range_loss)

@@ -22,6 +22,11 @@
 - 노트북 재생성: `python tests/build_diffusion_bundle.py`. 선택적 백업 ZIP은 `outputs/diffusion_bundle/hsqm_diffusion_a100.zip`에 저장.
 - 이 버전은 소형 문자 이미지 학습 프로세스다. AnyText 미세조정·역확산 guidance·검증된 획 오류 점수는 아직 포함하지 않는다.
 
+## 4글자 공동 역확산 보정 실험
+
+- [Colab 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/topo_guided_diffusion.ipynb) — SD1.5/DDIM, strength .65, seed 100. 동일 초기 잠재값으로 보정 없음·기존 획별 보정·윤곽 보조 손실 추가를 비교합니다.
+- [손실·설정·검증 범위](docs/diffusion_model/TOPO_GUIDANCE.md) — 동결 Topo의 추출 획 구조 손실과 기준 대비 미분 가능한 윤곽·국소 잉크량 보조 손실을 사용합니다. 구조 점수 공식은 유지하고 획별 보조 오차를 별도로 출력합니다. 실제 pretrained GPU 품질은 실행 검증 대상입니다.
+
 ## 획 분리 모델
 
 - 누락·분리·정션·추가 잉크 구조 지표: [점수 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/structural_indicator.ipynb) — [공식·설정·API](docs/stroke_model/STRUCTURAL_INDICATOR.md). 기본 source 모드는 글자 전체의 위치·회전·크기를 맞춘 뒤 실제 입력 잉크를 평가해, 추출 채널의 오배정을 원본 누락으로 처리하지 않습니다. 심한 추가·삭제를 강하게 감점하며 사진·점수·정렬 비교를 표시합니다.

@@ -16,22 +16,23 @@ def build_guided():
     source(0,'''# 4글자 공동 생성 — Topo 추출 획으로 역확산 유도
 
 Stable Diffusion 1.5의 **잡음 예측 U-Net + DDIM**, strength **0.65**, seed **100**.
-학습 범위의 기준 글자 4개를 한 장에 놓고 공동 생성합니다. 보정 없음/균등 보정/획별 집중 보정은
+학습 범위의 기준 글자 4개를 한 장에 놓고 공동 생성합니다. 보정 없음/기존 획별 보정/윤곽 보조 보정은
 VAE 샘플링과 잡음 추가까지 완료한 **동일한 초기 잠재값을 복사해** 시작합니다.
 
 각 guidance 단계에서 예상 완성 잠재값 → fp32 VAE → 4칸 torch crop/resize → 동결 Topo
 → 실제 예측 soft 획의 누락/분리/정션 손실을 계산합니다. 이 손실을 예상 완성 잠재값에
 미분해 잡음 예측을 보정합니다. U-Net을 통한 역전파와 모델 가중치 학습은 하지 않습니다.
-원본 점수가 주 손실을 대신하지 않습니다. 주변 잉크에는 작은 별도 보조 항만 적용합니다.
+기존 추출 획 손실을 유지하면서, soft 획의 기준 대비 윤곽·국소 잉크량 오차를 보조 손실로 추가합니다.
+이는 기준 형태·글씨체에 가까워지는 유도입니다. 물리적 획 두께 측정이나 새 구조 점수는 아닙니다.
 
 보정량은 예상 완성 잠재값 RMS의 1%에서 시작하며, 같은 시점의 손실이 내려가고
 4글자의 평균 추출 획 점수가 낮아지지 않아야 채택합니다.
-획별 집중은 w=min(3,1+2*(1-획점수/100))를 미분 없이 정하고, 후보 비교 중 고정합니다.
+획별 집중은 구조 결함과 윤곽 결함 중 큰 쪽을 사용해 최대 3배 비중을 주고, 후보 비교 중 고정합니다.
 90점 이상인 획이 같은 시점에서 1점 넘게 악화되면 보정을 거부합니다.
 연결 성분 분리·이진 윤곽 점수는 guidance에 사용하지 않습니다. 모델 체크포인트는 읽기만 합니다.
 
 1. 준비·Drive → 2. 기준 자료만 준비(학습 NPZ 일괄 변환 없음)
-3. 정확히 4개 기준 선택 → 4. 세 경로 공동 생성과 원본 비교 → 5. **획별 점수·결함·수정 방향** 비교
+3. 정확히 4개 기준 선택 → 4. 세 경로 공동 생성과 원본 비교 → 5. **획별 구조 점수·윤곽 오차·수정 방향** 비교
 
 Colab GPU에서 실행하세요. 역전파가 추가되어 기존 생성보다 느리고 메모리를 더 사용합니다.
 검사는 실제 DDIM과 작은 대체 네트워크를 사용합니다. 사용자의 SD/Topo GPU 결과는
@@ -45,7 +46,11 @@ GUIDANCE = dict(clean_step_ratio=.01,start_fraction=.30,end_fraction=1.,
                 every=1,backtracks=2,snapshot_every=4,
                 healthy_stroke_score=90.,max_healthy_stroke_drop=1.)
 STROKE_FOCUS = dict(focus_strength=2.,max_stroke_weight=3.)
-COMPARE_UNIFORM = True  # 보정 없음 / 균등 보정 / 획별 집중 보정, 세 경로 비교
+COMPARE_UNIFORM = False  # 이전 균등 보정까지 추가 비교하려면 True (생성 경로 1개 추가)
+COMPARE_STRUCTURE = True  # 동일 예산으로 기존 획별 보정과 새 보조 손실 비교
+APPEARANCE_WEIGHT = .5  # 0이면 기존 획별 보정만 사용
+APPEARANCE_CONFIG = dict(mass_radii=(1,2),mass_allowance=.03,
+                         contour_allowance=.05,contour_weight=.5,priority_scale=.1)
 STRUCTURE_CONFIG = {}  # 기존 StrokeStructureLoss 기본 측정. 임의의 반복 상한으로 자르지 않습니다.
 EXTRA_AUX_WEIGHT = .05
 '''
@@ -62,7 +67,9 @@ OUTPUT_DIR = HSQM/'topo_guided_diffusion'/datetime.now().strftime('%Y%m%d_%H%M%S
 generation = generate_guided_pair(TRAIN_MANIFEST,list(reference_select.value),CHECKPOINT,OUTPUT_DIR,
     model_id=MODEL_ID,revision=MODEL_REVISION,steps=STEPS,canvas_size=CANVAS_SIZE,
     guidance=GUIDANCE,structure_config=STRUCTURE_CONFIG,extra_weight=EXTRA_AUX_WEIGHT,
-    stroke_focus=STROKE_FOCUS,compare_uniform=COMPARE_UNIFORM)
+    stroke_focus=STROKE_FOCUS,compare_uniform=COMPARE_UNIFORM,
+    appearance_weight=APPEARANCE_WEIGHT,appearance_config=APPEARANCE_CONFIG,
+    compare_structure=COMPARE_STRUCTURE)
 generation['data_preparation']=preparation
 (OUTPUT_DIR/'generation_report.json').write_text(json.dumps(generation,ensure_ascii=False,indent=2),encoding='utf-8')
 (OUTPUT_DIR/'git_commit.txt').write_text(commit,encoding='utf-8')
@@ -73,7 +80,7 @@ for ax,page in zip(axes,generation['pages']):
     ax.set_title(page['method']);ax.axis('off')
 plt.tight_layout();plt.show()
 print('채택된 guidance 단계:',generation['guided_accepted_steps'])
-print('baseline=보정 없음 / uniform_guided=균등 보정 / guided=획별 집중 보정')
+print('baseline=보정 없음 / structure_guided=기존 획별 보정 / guided=윤곽·두께 보조 손실 추가')
 print('동일한 시작 잠재값:',generation['initial_latent_sha256'])
 print('원본·예상 완성 이미지·보정 전후 손실:',OUTPUT_DIR)
 from diffusion_model.guidance_diagnostics import diagnose_pair
@@ -93,21 +100,27 @@ if (OUTPUT_DIR/'stroke_guidance_trace.csv').exists():
 topo_scores,topo_extraction,debug_zip=evaluate_topo_pair(
     OUTPUT_DIR/'generation_report.json',CHECKPOINT,show=True)
 display(topo_scores[['method','slot','extracted_stroke_score_no_extra',
-    'stroke_loss','missing','split','junction','extra_auxiliary']])
+    'stroke_loss','appearance_loss','contour','local_mass','missing','split','junction','extra_auxiliary']])
 paired=topo_scores[topo_scores['method']!='reference'].pivot(
     index='slot',columns='method',values='extracted_stroke_score_no_extra')
 paired['guided_minus_baseline']=paired['guided']-paired['baseline']
 if 'uniform_guided' in paired:
     paired['guided_minus_uniform']=paired['guided']-paired['uniform_guided']
+if 'structure_guided' in paired:
+    paired['guided_minus_structure']=paired['guided']-paired['structure_guided']
 display(paired)
 evaluation_dir=Path(debug_zip).parent
 stroke_scores=pd.read_csv(evaluation_dir/'stroke_scores.csv')
-display(stroke_scores[['method','slot','stroke','score','weight','weight_share','missing','split','junction']])
+display(stroke_scores[['method','slot','stroke','score','weight','weight_share','missing','split','junction',
+                       'appearance_loss','contour','local_mass']])
 display(pd.read_csv(evaluation_dir/'stroke_comparison.csv'))
+print('윤곽·국소 잉크량 오차는 낮을수록 기준과 가깝습니다. *_minus_guided가 양수이면 오차 감소입니다.')
+display(pd.read_csv(evaluation_dir/'appearance_comparison.csv'))
 print('결함 지도와 획별 RGB 손실 기울기: 빨강은 어둡게, 파랑은 밝게 하는 방향입니다. 각 그림의 색은 따로 확대 표시합니다.')
 print('RGB 기울기는 입력 이미지에 대한 방향 진단이며, 실제 잠재값 보정 결과와 동일한 그림은 아닙니다.')
 print('최종 그림의 가중치는 해당 이미지에서 재계산한 진단값이며, 실제 단계별 가중치는 stroke_guidance_trace.csv에 있습니다.')
 print('주 점수는 Topo가 실제 추출한 soft 획에서 계산합니다. extra는 주 점수에서 제외하고 보조 항으로 별도 기록합니다.')
+print('구조 점수 공식은 이전과 같습니다. 윤곽 보조 손실과 원본 이미지를 함께 비교하세요.')
 print('점수 상승과 원본 글자의 실제 개선을 함께 확인하세요. 채널 재배정만 좋아진 경우도 있을 수 있습니다.')
 RUN_INDEPENDENT_SOURCE_AUDIT = False  # 원본 직접 측정까지 추가 검증하려면 True
 if RUN_INDEPENDENT_SOURCE_AUDIT:
