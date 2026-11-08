@@ -49,6 +49,22 @@ class LocalEditTests(unittest.TestCase):
         self.assertTrue(trace['accepted'])
         self.assertGreater(float(result[:,:,13:14,9:15].mean()),.9)
 
+    def test_faint_residue_retains_erase_gradient(self):
+        ref,bad=self.sample()
+        mse=LocalReferenceEdit(ref,bad)
+        hybrid=LocalReferenceEdit(ref,bad,erase_l1_weight=.5)
+        faint=ref.clone();faint[:,:,14:17,9:15]=.98
+        x=faint.requires_grad_(True)
+        gm,=torch.autograd.grad(mse.measure(x)['edit'],x)
+        gh,=torch.autograd.grad(hybrid.measure(x)['edit'],x)
+        self.assertGreater(float(gh.abs().sum()),float(gm.abs().sum())*2)
+        self.assertLess(float(gh[:,:,14:17,9:15].sum()),0)
+        hybrid.rebase(faint.detach())
+        out,t=optimize_local(faint.detach(),lambda z:z,hybrid,iterations=48)
+        self.assertLess(t['residual_mean_after'],t['residual_mean_before'])
+        self.assertTrue(torch.equal(out[:,:,4:28,16:19],ref[:,:,4:28,16:19]))
+        self.assertIn(t['stop_reason'],('iteration_limit','zero_gradient','protection_limit','no_feasible_descent'))
+
     def test_maps_stay_fixed_after_rebase(self):
         ref,bad=self.sample();e=LocalReferenceEdit(ref,bad);mask=e.erase.clone()
         e.rebase(ref);self.assertTrue(torch.equal(mask,e.erase))

@@ -66,3 +66,10 @@ After the 60-step screenshot still showed a pale left spur, the notebook preset 
 
 ## Faint boundary cleanup
 The notebook uses local_halo_radius=2: expand detected erase regions into nearby reference background only (dilated reference ink <0.05). Faint pixels below the original 0.2 detection threshold can then be optimized instead of protected. This is an inference from the screenshot, not a confirmed diagnosis from a new trace. The last denoising step permits up to 96 inner iterations (48 elsewhere), within the same per-step latent/protection bounds. The first fixed maps include the halo and are exported as before. Defaults remain backward compatible. More iterations may still stop early at the protection or latent constraint. GPU improvement remains unverified.
+
+
+## Residual-sensitive erase objective and stop diagnostics
+
+The notebook now sets local_erase_l1_weight=0.5 (legacy API default 0). L_edit = mean_E((RGB-1)^2) + 0.5 mean_E(abs(RGB-1)) + mean_M((RGB-reference)^2). The existing 20×protected mean/peak squared penalties and hard limits remain. The added absolute error retains an erase derivative as a pale residual approaches white; previously its squared error derivative shrank linearly. This does not prove that gradient magnitude was the cause of the supplied screenshot: normalized latent directions and VAE coupling still matter.
+
+Trace summaries now record stop_reason (iteration_limit, zero_gradient, protection_limit, no_feasible_descent), residual mean/peak and latent budget fraction. A budget fraction near one is evidence of a trust-region bound, not automatic permission to increase it. The notebook displays the final summary. No pixel painting or thresholding of the exported generated RGB is applied. This is still a known-reference control experiment and its actual SD improvement needs GPU validation with the next debug archive.

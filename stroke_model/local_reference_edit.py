@@ -1,12 +1,15 @@
 """Fixed reference erase/fill maps; no extractor ownership gradients."""
+import math
 import torch
 from torch.nn import functional as F
 
 
 class LocalReferenceEdit:
-    def __init__(self, reference, anchor, threshold=.2, radius=1, halo_radius=0):
+    def __init__(self, reference, anchor, threshold=.2, radius=1, halo_radius=0, erase_l1_weight=0.):
         if reference.shape != anchor.shape or reference.ndim != 4 or reference.shape[1] != 3:
             raise ValueError('Matching BCHW RGB sheets required')
+        if not math.isfinite(erase_l1_weight) or erase_l1_weight<0:raise ValueError("Invalid erase L1 weight")
+        self.erase_l1_weight=erase_l1_weight
         self.anchor=anchor.detach()
         self.reference=reference.detach()
         ref=1-reference.mean(1,keepdim=True).clamp(0,1)
@@ -31,11 +34,17 @@ class LocalReferenceEdit:
         # Unclamped decoder RGB preserves gradients even for saturated black.
         error=(rgb-self.target).square().mean(1,keepdim=True)
         erase=(error*self.erase).sum()/self.erase.sum().clamp_min(1)
+        erase_l1=((rgb-1).abs().mean(1,keepdim=True)*self.erase).sum()/self.erase.sum().clamp_min(1)
+        residual=(1-rgb.clamp(0,1)).mean(1,keepdim=True)*self.erase
+        residual_mean=residual.sum()/self.erase.sum().clamp_min(1)
+        residual_peak=residual.amax()
         fill=(error*self.fill).sum()/self.fill.sum().clamp_min(1)
         change=(rgb-self.anchor).square().mean(1,keepdim=True)*self.protect
         protected=change.sum()/self.protect.sum().clamp_min(1)
         peak=F.avg_pool2d(change,5,1,2).amax().clamp_min(1e-12).sqrt()
-        return dict(edit=erase+fill,erase=erase,fill=fill,protected=protected,peak=peak)
+        return dict(edit=erase+fill+self.erase_l1_weight*erase_l1,erase=erase,erase_l1=erase_l1,
+                    residual_mean=residual_mean,residual_peak=residual_peak,
+                    fill=fill,protected=protected,peak=peak)
 
 
 def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio=.08,
@@ -45,7 +54,7 @@ def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio
     origin=clean.detach().float();current=origin.clone();best=origin.clone()
     scale=origin.square().mean().sqrt().clamp_min(1e-3)
     with torch.no_grad():before=editor.measure(decode(origin))
-    best_error=float(before['edit']);history=[]
+    best_error=float(before['edit']);history=[];stop_reason='iteration_limit'
     for index in range(iterations):
         with torch.enable_grad():
             leaf=current.detach().requires_grad_(True)
@@ -54,7 +63,8 @@ def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio
             gradient,=torch.autograd.grad(loss,leaf)
         if not torch.isfinite(gradient).all():raise FloatingPointError('Nonfinite local edit gradient')
         norm=gradient.square().mean().sqrt()
-        if norm<1e-12:break
+        if norm<1e-12:
+            stop_reason='zero_gradient';break
         # Search from the last feasible state. A large normalized step can
         # cross the protection boundary; shrinking it retains useful progress.
         moved=False
@@ -69,12 +79,22 @@ def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio
                 energy=row['edit']+protect_weight*(row['protected']+row['peak']**2)
                 accept=ok and row['edit']<best_error and energy<float(loss.detach())
                 row.update(iteration=index,backtrack=attempt,feasible=ok,accepted=accept,
-                           step_ratio=step_ratio*(.5**attempt))
+                           step_ratio=step_ratio*(.5**attempt),
+                           budget_fraction=float((candidate-origin).square().mean().sqrt()/(budget_ratio*scale)))
                 history.append(row)
                 if accept:
                     current=candidate.clone();best=current.clone();best_error=row['edit']
                     moved=True
                     break
-        if not moved:break
-    return best,dict(accepted=best_error<float(before['edit']),loss_before=float(before['edit']),
+        if not moved:
+            stop_reason=('protection_limit' if all(not r['feasible'] for r in history if r['iteration']==index)
+                         else 'no_feasible_descent')
+            break
+    with torch.no_grad():final=editor.measure(decode(best))
+    return best,dict(stop_reason=stop_reason,
+                     residual_mean_before=float(before['residual_mean']),
+                     residual_mean_after=float(final['residual_mean']),
+                     residual_peak_after=float(final['residual_peak']),
+                     latent_budget_fraction=float((best-origin).square().mean().sqrt()/(budget_ratio*scale)),
+                     accepted=best_error<float(before['edit']),loss_before=float(before['edit']),
                      loss_after=best_error,local_iterations=history)

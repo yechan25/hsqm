@@ -30,9 +30,11 @@ class GuidanceConfig:
     local_iterations: int=24
     local_halo_radius: int=0
     local_final_iterations: int=0
+    local_erase_l1_weight: float=0.
 
     def __post_init__(self):
-        if (type(self.local_halo_radius) is not int or self.local_halo_radius<0
+        if (not math.isfinite(self.local_erase_l1_weight) or self.local_erase_l1_weight<0
+                or type(self.local_halo_radius) is not int or self.local_halo_radius<0
                 or type(self.local_final_iterations) is not int or self.local_final_iterations<0
                 or type(self.local_iterations) is not int or self.local_iterations<1
                 or (self.local_edit and self.state_update!='clean_residual')
@@ -125,7 +127,8 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                 with torch.no_grad():
                     anchor=decode_estimate(pipe,original.pred_original_sample)
                     reference=(1-objective.source_guard.reference_ink).expand_as(anchor)
-                    editor=LocalReferenceEdit(reference,anchor,halo_radius=config.local_halo_radius)
+                    editor=LocalReferenceEdit(reference,anchor,halo_radius=config.local_halo_radius,
+                        erase_l1_weight=config.local_erase_l1_weight)
                     objective.local_editor=editor
             with torch.no_grad():editor.rebase(decode_estimate(pipe,original.pred_original_sample))
             edited,summary=optimize_local(original.pred_original_sample,
