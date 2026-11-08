@@ -3,6 +3,12 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import PowerNorm
+import stroke_model.source_quality_v5 as quality_runtime
+if getattr(quality_runtime, 'QUALITY_SCHEMA', None) != 'component_diagnostics_v2':
+    raise RuntimeError('현재 런타임에 예전 점수 코드가 남아 있습니다. 최신 1번 셀을 실행한 뒤 최신 5번 셀을 실행하세요. 생성은 다시 할 필요 없습니다.')
+print('점수 코드:', quality_runtime.QUALITY_SCHEMA, '| GitHub:', globals().get('commit', '미기록'))
+SHOW_RAW_EXTRA_DIAGNOSTICS = False  # 기존 전체 칸 점수/그림을 함께 보려면 True
+SHOW_CONTOUR_DIAGNOSTICS = False  # 윤곽 진단 그림은 항상 저장. 화면에도 보려면 True
 
 # 같은 생성 폴더의 점수 결과가 있으면 재사용합니다.
 RECOMPUTE = False
@@ -14,10 +20,12 @@ if 'result' in globals():
         same_run = Path(entries[0]['npz']).resolve().parents[1] == Path(OUTPUT_DIR).resolve()
 if RECOMPUTE or not same_run:
     result, scores = score_pilot(OUTPUT_DIR/'generation_report.json', CHECKPOINT,
-        score_config=SCORE_CONFIG, source_config=SOURCE_CONFIG, show=True)
-display(scores)
+        score_config=SCORE_CONFIG, source_config=SOURCE_CONFIG, show=SHOW_RAW_EXTRA_DIAGNOSTICS)
+if SHOW_RAW_EXTRA_DIAGNOSTICS:
+    display(scores)
 
-for sample, measured in zip(result['extraction']['results'], result['indicator']['results']):
+raw_diagnostics = zip(result['extraction']['results'], result['indicator']['results']) if SHOW_RAW_EXTRA_DIAGNOSTICS else []
+for sample, measured in raw_diagnostics:
     with np.load(measured['measurement_npz'], allow_pickle=False) as data:
         ink, extra, support = [data[key].copy() for key in ('image', 'extra_map', 'support')]
     fig, axes = plt.subplots(1, 4, figsize=(19, 4))
@@ -50,14 +58,15 @@ print('빨강은 추가 잉크로 계산된 위치입니다. 옅은 성분을 �
 print('막대의 왼쪽에 몰리면 옅은 픽셀의 영향, 오른쪽에 몰리면 진한 잉크의 영향을 확인하세요.')
 print('밝기 구간만으로 배경과 실제 추가 획을 자동 판정하지는 않습니다.')
 print('진단 그림 저장:', result['save_dir'])
-from stroke_model.source_quality_v5 import compare_quality_v5
+from stroke_model.source_quality_v5 import compare_quality_v5, plot_component_review
 QUALITY_CONFIG = {}  # 실험 기본값. 원래 점수는 보존하고 새 비교 열을 추가합니다.
-quality_report, quality_scores = compare_quality_v5(result, config=QUALITY_CONFIG, show=True)
+quality_report, quality_scores = compare_quality_v5(result, config=QUALITY_CONFIG, show=SHOW_CONTOUR_DIAGNOSTICS)
 quality_view = quality_scores.copy()
 quality_view['unassigned_ink_percent'] = 100*quality_view['unassigned_ink_fraction']
 display(quality_view[['label','body_diagnostic_score','body_structural_score','body_contour_score_cap',
     'unassigned_component_count','unassigned_ink_percent','unassigned_ink_review_required',
     'experimental_score','raw_source_score']])
+review_figures = plot_component_review(result, quality_report, show=True)
 print('자홍색은 기준 획과 겹치지 않는 분리 성분입니다. 본체 진단에서만 분리하며 원본/전체 점수에는 보존합니다.')
 print('비대응 성분이 실제 추가 획인지 주변 표식인지는 그림으로 확인해야 합니다. 본체 점수만으로 정상 판정하지 마세요.')
 print('새 점수는 실험용입니다. 정상 글꼴 차이와 실제 돌출·패임을 구분해 그림으로 확인하세요.')

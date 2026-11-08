@@ -16,6 +16,8 @@ import torch
 from .source_structure import SourceConfig, PreparedSourceMetric, register_reference
 from .structural_indicator import IndicatorConfig, StructuralIndicator
 
+QUALITY_SCHEMA = 'component_diagnostics_v2'
+
 
 @dataclass(frozen=True)
 class QualityConfig:
@@ -226,7 +228,7 @@ def compare_quality_v5(result, *, config=None, show=True):
         plt.close(fig)
     frame=pd.DataFrame(rows)
     frame.to_csv(destination/'quality_scores.csv',index=False,encoding='utf-8-sig')
-    report=dict(version='source_quality_v5_component_diagnostics',trained=False,human_calibrated=False,
+    report=dict(version='source_quality_v5_component_diagnostics',schema=QUALITY_SCHEMA,trained=False,human_calibrated=False,
                 body_score_scope='Excludes disconnected components outside expected support; role unverified',
                 differentiable=False,config=asdict(cfg),score_config=asdict(score_cfg),
                 source_config=asdict(source_cfg),results=rows,save_dir=str(destination))
@@ -236,3 +238,59 @@ def compare_quality_v5(result, *, config=None, show=True):
             for file in destination.iterdir():
                 archive.write(file,f'{destination.name}/{file.name}')
     return report,frame
+
+
+def plot_component_review(result, quality_report, *, show=True):
+    """Show raw predictions beside a clearly labelled support-rule display.
+
+    This does NOT add a learned rejection channel or modify saved raw masks.
+    """
+    import matplotlib.pyplot as plt
+    samples=result['extraction']['results']
+    quality=quality_report['results']
+    if len(samples)!=len(quality):raise ValueError('Sample/quality count mismatch')
+    paths=[]
+    for index,(sample,measured) in enumerate(zip(samples,quality),1):
+        with np.load(sample['npz'],allow_pickle=False) as data:
+            ink=data['image'][0].copy()
+            reference=(data['reference_image'] if 'reference_image' in data else data['reference'])[0].copy()
+            masks=data['soft_masks'].copy()
+        with np.load(measured['maps'],allow_pickle=False) as data:
+            unassigned=data['unassigned_ink_map'].copy()
+        excluded=unassigned>0
+        foreground=ink>.5
+        k=len(masks)
+        palette=plt.get_cmap('tab20')(np.arange(k)%20)[:,:3]
+        raw=np.zeros((*ink.shape,3))
+        raw[foreground]=palette[masks.argmax(0)[foreground]]
+        reviewed=raw.copy();reviewed[excluded&foreground]=[1,0,1]
+        fig,axes=plt.subplots(2,k+3,figsize=(2.4*(k+3),5.6),squeeze=False,layout='constrained')
+        for ax in axes.flat:ax.axis('off')
+        axes[0,0].imshow(ink,cmap='gray_r',vmin=0,vmax=1);axes[0,0].set_title('Full scored input')
+        axes[1,0].imshow(reference,cmap='gray_r',vmin=0,vmax=1);axes[1,0].set_title('Reference')
+        axes[0,1].imshow(raw);axes[0,1].set_title('Raw model: forced assignment')
+        axes[1,1].imshow(reviewed);axes[1,1].set_title('Reference-rule view\nMagenta: unassigned')
+        axes[0,2].text(.02,.98,
+            f"BODY DIAGNOSTIC\n{measured['body_diagnostic_score']:.1f} / 100\n"
+            f"Structure: {measured['body_structural_score']:.1f}\nContour cap: {measured['body_contour_score_cap']:.1f}\n\n"
+            f"Unassigned: {measured['unassigned_component_count']} components\n"
+            f"Ink mass: {100*measured['unassigned_ink_fraction']:.2f}%\n\n"
+            f"Whole-crop raw: {measured['raw_source_score']:.1f}\nPrototype; not human-calibrated",va='top',fontsize=9)
+        axes[1,2].imshow(unassigned,cmap='gray_r',vmin=0,vmax=1)
+        axes[1,2].set_title('Unassigned ink')
+        for channel in range(k):
+            axes[0,channel+3].imshow(masks[channel],cmap='gray_r',vmin=0,vmax=1)
+            axes[0,channel+3].set_title(f'Raw soft {channel+1}')
+            axes[1,channel+3].imshow(masks[channel]*(~excluded),cmap='gray_r',vmin=0,vmax=1)
+            axes[1,channel+3].set_title(f'Rule-filtered view {channel+1}')
+        fig.suptitle(sample.get('label','')+'\nDisplay-only support rule; raw masks unchanged; no learned rejection')
+        path=Path(quality_report['save_dir'])/f'extraction_review_{index:04d}.png'
+        fig.savefig(path,dpi=140)
+        if show:plt.show()
+        plt.close(fig)
+        paths.append(str(path))
+    if result.get('debug_zip'):
+        with zipfile.ZipFile(result['debug_zip'],'a',zipfile.ZIP_DEFLATED) as archive:
+            for path in paths:
+                file=Path(path);archive.write(file,f'{file.parent.name}/{file.name}')
+    return paths
