@@ -57,6 +57,8 @@ def diagnose_pair(output,show=True):
         mean_accepted_appearance_loss_drop=mean([v for v in appearance_gains if v is not None]),
         mean_state_delta_rms=mean([r['state_delta_rms'] for r in accepted if 'state_delta_rms' in r]),
         mean_state_change_to_base_step_ratio=mean([r['state_change_to_base_step_ratio'] for r in accepted if 'state_change_to_base_step_ratio' in r]),
+        mean_state_to_clean_transfer_ratio=mean([r['state_delta_rms']/max(r['clean_delta_rms'],1e-12) for r in accepted if 'state_delta_rms' in r and 'clean_delta_rms' in r]),
+        meaningful_changed_pixel_percent_over_8=float((difference.max(-1)>8).mean()*100),
         ddim_state_dtype=report.get('ddim_state_dtype','not recorded in this older run'),
         final_latent_rms_difference=report.get('final_latent_rms_difference'))
     (output/'guidance_diagnostics.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -86,6 +88,8 @@ def diagnose_pair(output,show=True):
     print('평균 주변 잉크 보조항 감소:',summary['mean_accepted_extra_auxiliary_drop'])
     print('평균 윤곽·국소 잉크량 오차 감소:',summary['mean_accepted_appearance_loss_drop'])
     print('평균 실제 다음 상태 변화 RMS:',summary['mean_state_delta_rms'])
+    print('예상 완성 보정 대비 다음 상태 전달 비율:',summary['mean_state_to_clean_transfer_ratio'])
+    print('채널값이 8/255 넘게 변한 픽셀 비율(%):',summary['meaningful_changed_pixel_percent_over_8'])
     if summary['mean_state_delta_rms'] is None:
         print('이전 실행 로그에는 실제 상태 변화량이 없습니다. 기존 PNG 차이는 위에서 확인할 수 있습니다.')
     return summary,frame

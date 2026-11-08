@@ -22,8 +22,8 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
 - 각 단계의 원래 예상 완성 이미지에서 정한 가중치를 모든 backtracking 후보에
   고정한다. 후보마다 가중치를 다시 계산해 서로 다른 목적함수를 비교하지 않는다.
   다음 timestep에서는 새 예상 완성 이미지로 우선순위를 다시 정한다.
-- 구조 전용 비교 경로 `structure_guided`는 아래 윤곽 보조 손실을 끄고 이전 획별
-  보정을 재현한다. 보정 예산·일정·채택 기준·초기 잠재값은 새 경로와 같다.
+- 구조 전용 비교 경로 `structure_guided`는 아래 윤곽 보조 손실을 끈다.
+  보정 예산·일정·전달 방식·채택 기준·초기 잠재값은 guided와 같다.
   균등 구조 보정도 필요하면 `compare_uniform=True`로 한 경로 더 생성한다.
 - 주 손실은 원본 직접 측정 점수로 대체하지 않는다. 소량의 원본 주변 잉크 보조항
   `.05*sum(foreground_ink*(1-reference_support))/reference_ink_mass`와 범위 밖 RGB
@@ -42,8 +42,18 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
 
 `stroke_model.stroke_appearance.StrokeAppearanceLoss`를 실제 예측 soft 획에 적용한다.
 원본 전체 이미지의 점수로 추출 획 경로를 대신하지 않으며, 이진화·argmax·CPU 윤곽
-추출을 live 경로에 넣지 않는다. 기준 stroke mask가 겹치는 곳은 획 합으로 나눈 뒤
-기준 글자의 잉크량을 분배해, softmax 분할에서 불가능한 중복 불투명 획을 요구하지 않는다.
+추출을 live 경로에 넣지 않는다. 현재 기준은 **정상 reference sheet를 같은 crop/resize와
+동결 Topo에 넣어 얻은 실제 soft masks**다. 생성 전에 한 번 측정하고 고정하며, 모든
+경로가 같은 목표를 공유한다. reference의 appearance loss가 0인지 기록한다.
+
+이전 방식은 기준 stroke mask의 중첩을 정규화해 목표로 썼지만, 실제 학습된 Topo는
+정상 입력에서도 그와 다른 soft 배정을 했다. 제공된 ZIP에서는 정상 reference의
+appearance loss가 .39~.54였고, 대부분 획의 집중 비중이 포화했다. 스칼라 오차를
+빼는 방법 대신 목표 soft masks 자체를 정상 추출 응답으로 맞춘다. 이를 통해 추출기의
+평상시 배정 차이에 보정 예산을 소모하는 일을 줄인다. 구조 손실의 기준 획과 점수
+공식은 그대로다. `appearance_reference_masks`를 평가 NPZ에 저장한다.
+`appearance_target='partition_reference'`로 이전 목표 방식을 재현할 수 있으며,
+이 필드가 없는 과거 보고서도 이전 방식으로 평가한다.
 
 - `local_mass`: 3x3/5x5 평균 잉크량이 기준과 다른 정도. 너무 굵거나 가늘어지는
   경우 양쪽에 반응하며, 물리적 두께 추정값은 아니다.
@@ -73,32 +83,50 @@ report의 평가도 보조 손실 가중치 0으로 처리한다.
 reference-relative appearance 개선과 보편적 미관/글자 품질 개선을 구분하고,
 구조 점수·원본 그림·보조 손실을 함께 비교해야 한다.
 
-## 잡음 예측 보정
+## 잡음 예측 모델과 실제 상태 보정
 
 `diffusion_model.guided_ddim.denoise`는 Diffusers DDIM step의 `pred_original_sample`을 사용한다.
 처음 구현은 예상 완성 잠재값 z0를 leaf로 만들고 VAE -> Topo -> 획 손실을 미분하는
 **backward clean-latent guidance**다. U-Net을 통과해 zt까지 미분하지 않는다.
-실제 생성 모델은 그대로 epsilon을 예측하며, z0 기울기를 epsilon 보정으로 변환한다.
+실제 생성 모델은 그대로 epsilon을 예측한다. 아래 두 전달 방식을 구분한다.
+
+기존 `state_update='epsilon'`은 z0 기울기를 epsilon 보정으로 변환한다.
 
 `g0 = grad(L, predicted_z0)`
 
 `epsilon' = epsilon + positive_scale * g0`
 
 같은 zt에서 이 보정은 `z0' = z0 - sqrt((1-alpha_bar)/alpha_bar)*positive_scale*g0`가 되어
-예상 완성 잠재값의 손실 하강 방향이다. 현재 notebook 기본값은
+예상 완성 잠재값의 손실 하강 방향이다. clean 보정 예산은
 `desired=.01*ramp*RMS(predicted_z0)*g0/RMS(g0)`를 정하고,
-`epsilon'=epsilon+sqrt(alpha_bar/(1-alpha_bar))*desired`로 변환한다.
-따라서 후반 잡음이 작아져도 예상 완성 잠재값의 수정 예산이 함께 사라지지 않는다.
+`epsilon'=epsilon+sqrt(alpha_bar/(1-alpha_bar))*desired`로 변환할 수 있다.
+그러나 이를 보통 DDIM step에 넣으면 x0를 바꾸는 항과 바뀐 epsilon 방향 항이
+부분 상쇄된다. 실제 ZIP에서는 clean 보정 대비 다음 상태 변화의 RMS 비율이 평균
+.188, 가장 이른 채택 단계에서 .072였다. 이는 단계 사이 변화량의 비율이며,
+최종 이미지 개선 비율이나 기울기 전체의 보존율을 뜻하지 않는다.
+
+현재 notebook의 `state_update='clean_residual'`은 **잡음 방향을 고정한 guided mean
+update**다. 보정 후보 `z0'=z0-desired`를 평가한 뒤, 실제 다음 상태는
+`z_prev'=z_prev-sqrt(alpha_bar_prev)*desired`로 갱신한다.
+즉 DDIM의 기존 잔차 방향에 새 clean estimate를 합성해 보정량 상쇄를 줄인다.
+이는 수정한 epsilon만 넣은 표준 DDIM step과 다른 조건부 평균 이동이다. U-Net과
+가중치 학습은 바꾸지 않으며 eta=0을 유지한다. 로그의 `correction_rms`는 이 모드에서
+clean 후보에 대응하는 **등가 epsilon 변화량**이고, 실제 적용량은 `state_delta_rms`다.
+`state_to_clean_transfer_ratio`도 단계별로 저장한다. 마지막 단계에는 scheduler의
+`final_alpha_cumprod`를 써서 steps_offset/set_alpha_to_one 설정을 보존한다.
+
 진행률 .30 이후부터 마지막 단계까지 매번 검사하며, 초기에는 보정량을 점차 늘린다.
 기존 `noise_ratio=.05` 모드도 `clean_step_ratio=None`으로 재현할 수 있다.
 이전보다 검사 횟수가 늘어 실행 시간이 길어질 수 있다.
 
-수정한 epsilon으로 DDIM의 실제 clean estimate를 다시 구하고 평가한다. 같은 시점의
+각 모드의 수정된 clean estimate를 다시 평가한다. 같은 시점의
 전체 손실이 낮아지고 4글자 평균 추출 획 점수가 낮아지지 않으며 실제 다음 상태가 변할 때만 채택한다.
 추가로 **보정 전 90점 이상인 각 획**이 1점 넘게 나빠지는 후보는 거부한다.
 `healthy_stroke_score`, `max_healthy_stroke_drop`으로 임계값을 명시한다.
 이는 같은 시점 후보 사이의 보호 조건이며, 최종 결과에서 누적 악화가 없다는 보장은 아니다.
-그렇지 않으면 보정량을 절반씩 줄여 최대 3번 검사하고, 모두 실패하면 기본 DDIM step을 쓴다.
+그렇지 않으면 보정량을 절반씩 줄인다. notebook 기본 backtracks=5로 최대 6번
+검사하고, 모두 실패하면 기본 DDIM step을 쓴다. 초기 예산은 기존과 같은 1%이며,
+추가 backtracking은 마지막 단계처럼 작은 보정만 통과하는 경우를 검사하기 위한 것이다.
 모든 채택/거부·기울기 크기·보정 크기·글자별 점수·손실을 기록한다.
 각 단계에서 그래프를 끊어 전체 trajectory를 역전파하지 않는다.
 
@@ -136,6 +164,7 @@ PNG의 평균/최대 차이와 바뀐 픽셀 비율, 채택 단계의 획 손실
 나눠 확인한다. 새 실행에서는 실제 다음 상태 변화 RMS와 최종 잠재값 차이도 기록한다.
 `paired_pixel_difference.png`는 차이를 확대 표시하며 개선 여부를 뜻하지 않는다.
 진단 수치는 `guidance_diagnostics.json`, 글자별 차이는 `pixel_differences.csv`에 저장한다.
+단순히 1채널값만 달라진 배경까지 센 비율과 구분하도록 8/255 넘게 달라진 픽셀 비율도 출력한다.
 채택 횟수만으로 개선을 판단하지 않는다. 획 손실 변화가 작고 보조항만 줄었다면
 현재 추출 획 목적이 눈에 보이는 결함을 충분히 반영하는지 먼저 확인해야 한다.
 
@@ -158,6 +187,8 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 추가로 돌출을 지우고 패임을 채우는 기울기 부호, 모양 오차 감소, 일치하는 셰리프의
 0 손실, 겹치는 기준 획의 attainable target, 구조 점수가 높은 경우에도 새 보조
 신호가 실제 DDIM을 통과해 최종 상태에 남고 보조 오차가 줄어드는지 검사한다.
+정상 추출 기준의 0 appearance loss/고정 target, 새 평균 이동에서 기대한
+sqrt(alpha_prev)만큼 실제 상태가 바뀌는지, offset=1/final alpha 처리도 검사한다.
 작은 테스트용 네트워크와 사용자의 학습된 checkpoint에 대한 품질 검증은 구분한다.
 
 실제 pretrained SD1.5 + 사용자 Topo의 Colab GPU 실행/VRAM/최종 획 개선은 실행 후
@@ -181,6 +212,12 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 필요하면 미분 가능한 획 윤곽/두께 보조 손실을 별도 실험해야 한다.
 현재 진단은 새 보조 손실의 기울기와 25회 합성 마스크 직접 보정 전후도 함께 저장한다.
 이는 실제 확산 결과가 아닌 soft-mask 수준의 방향 검증이며, 기존 주 점수의 공식은 그대로다.
+
+ZIP만으로 이전 결과를 재분석하려면 다음을 실행한다:
+`python -m diffusion_model.inspect_guidance_archive guidance_debug.zip --output outputs/guidance_archive_audit`.
+저장된 정상 reference soft masks를 목표로 다시 계산한 값과 원래 값을 CSV/JSON에
+나란히 저장한다. 모델 가중치나 생성 재실행이 필요 없다. 이는 이전 이미지의
+재측정이며 새 전달 방식으로 생성한 결과가 아니다.
 
 참고: [Universal Guidance](https://arxiv.org/abs/2302.07121),
 [Diffusers 0.35.1 img2img](https://github.com/huggingface/diffusers/blob/v0.35.1/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_img2img.py),

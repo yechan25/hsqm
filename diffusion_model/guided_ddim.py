@@ -1,7 +1,8 @@
 """Backward clean-latent guidance for a frozen epsilon DDIM model.
 
 Gradient is through VAE -> frozen Topo -> soft stroke loss, NOT through U-Net.
-Each clean-latent correction is converted back to epsilon and backtracked until
+Either convert a clean-latent correction back to epsilon (legacy), or apply an
+explicit guided mean update with the U-Net residual held fixed. Backtrack until
 the SAME timestep's objective decreases. This does not guarantee final quality.
 """
 from copy import deepcopy
@@ -22,6 +23,7 @@ class GuidanceConfig:
     snapshot_every: int=4
     healthy_stroke_score: float=90.
     max_healthy_stroke_drop: float=1.
+    state_update: str='epsilon'
 
     def __post_init__(self):
         if (not math.isfinite(self.noise_ratio) or self.noise_ratio<0
@@ -32,7 +34,9 @@ class GuidanceConfig:
                 or type(self.backtracks) is not int or self.backtracks<0
                 or type(self.snapshot_every) is not int or self.snapshot_every<1
                 or not math.isfinite(self.healthy_stroke_score) or not 0<=self.healthy_stroke_score<=100
-                or not math.isfinite(self.max_healthy_stroke_drop) or self.max_healthy_stroke_drop<0):
+                or not math.isfinite(self.max_healthy_stroke_drop) or self.max_healthy_stroke_drop<0
+                or self.state_update not in ('epsilon','clean_residual')
+                or (self.state_update=='clean_residual' and self.clean_step_ratio is None)):
             raise ValueError('Invalid guidance schedule')
 
 
@@ -99,7 +103,7 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
         progress=index/max(len(timesteps)-1,1)
         active=(objective is not None and enabled and index%config.every==0
                 and config.start_fraction<progress<=config.end_fraction)
-        record=dict(step=index,timestep=int(t),active=active,accepted=False,
+        record=dict(step=index,timestep=int(t),active=active,accepted=False,state_update=config.state_update,
                     base_transition_rms=float((original.prev_sample-latent).square().mean().sqrt()))
         chosen=original
         if active:
@@ -135,7 +139,20 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                     for attempt in range(config.backtracks+1):
                         candidate_noise=(predicted.float()+correction*(.5**attempt)).to(predicted.dtype)
                         actual_delta=candidate_noise.float()-predicted.float()
-                        candidate=scheduler.step(candidate_noise,t,latent,eta=0.,return_dict=True)
+                        if config.state_update=='clean_residual':
+                            # Keep the U-Net residual direction FIXED. Modifying both
+                            # x0 and epsilon in ordinary DDIM largely cancels the step.
+                            # This is an explicit guided-mean update, not an ordinary
+                            # DDIM step from a corrected epsilon at fixed z_t.
+                            delta=desired*(.5**attempt)
+                            prev_t=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
+                            prev_alpha=(scheduler.alphas_cumprod[prev_t] if prev_t>=0
+                                        else scheduler.final_alpha_cumprod).to(latent.device).float()
+                            candidate=type(original)(
+                                prev_sample=original.prev_sample-prev_alpha.sqrt()*delta,
+                                pred_original_sample=original.pred_original_sample-delta)
+                        else:
+                            candidate=scheduler.step(candidate_noise,t,latent,eta=0.,return_dict=True)
                         image=decode_estimate(pipe,candidate.pred_original_sample.float())
                         after,after_details=(objective(image,stroke_weights=priorities) if priorities is not None
                                              else objective(image))
@@ -152,13 +169,15 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                                 'no_state_change' if state_delta==0 else 'accepted')
                         record['attempts'].append(dict(attempt=attempt,loss_after=float(after),
                             topo_score_after=after_score,state_delta_rms=state_delta,
-                            clean_delta_rms=clean_delta,max_healthy_stroke_drop=healthy_drop,reason=reason))
+                            clean_delta_rms=clean_delta,max_healthy_stroke_drop=healthy_drop,reason=reason,
+                            state_to_clean_transfer_ratio=state_delta/max(clean_delta,1e-12)))
                         if reason=='accepted':
                             chosen=candidate
                             record.update(accepted=True,backtracks=attempt,loss_after=float(after),
                                 correction_rms=float(actual_delta.square().mean().sqrt()),
                                 topo_score_after=after_score,per_glyph_after=_scalar_rows(after_details),
                                 state_delta_rms=state_delta,clean_delta_rms=clean_delta,
+                                state_to_clean_transfer_ratio=state_delta/max(clean_delta,1e-12),
                                 state_change_to_base_step_ratio=state_delta/max(record['base_transition_rms'],1e-12))
                             break
             if not record['accepted']:record['loss_after']=record['loss_before']

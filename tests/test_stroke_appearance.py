@@ -93,5 +93,31 @@ class AppearanceTests(unittest.TestCase):
                        dict(mass_allowance=float('nan'))):
             with self.assertRaises(ValueError):AppearanceConfig(**kwargs)
 
+    def test_normal_extractor_response_is_the_frozen_appearance_target(self):
+        class DifferentOwnership(nn.Module):
+            def forward(self,image,reference,strokes):
+                probabilities=torch.ones_like(strokes)/strokes.shape[1]
+                return dict(masks=image*probabilities,probabilities=probabilities)
+        strokes=self.reference.repeat(2,1,1).numpy()
+        strokes[1]=0;strokes[1,3:6,4:20]=1
+        ref=strokes.max(0)[None]
+        slots=[dict(reference=ref,strokes=strokes,bbox=[x,y,x+24,y+24]) for y in (0,24) for x in (0,24)]
+        crop=torch.from_numpy(1-ref).repeat(3,1,1)
+        image=torch.cat([torch.cat([crop,crop],2)]*2,1)[None]
+        objective=TopoGuidance(DifferentOwnership(),slots,extra_weight=0,appearance_weight=.5)
+        _,before=objective(image)
+        self.assertTrue(all(float(r['appearance_loss'])>.1 for r in before['per_glyph']))
+        calibration=objective.calibrate_appearance(image)
+        _,after=objective(image)
+        for a,b,c in zip(before['per_glyph'],after['per_glyph'],calibration):
+            self.assertEqual(float(b['appearance_loss']),0)
+            self.assertEqual(float(a['extracted_stroke_score_no_extra']),float(b['extracted_stroke_score_no_extra']))
+            self.assertEqual(c['calibrated_reference_error'],0)
+        targets=[m.reference.clone() for m in objective.appearance_metrics]
+        objective(image*.9)
+        for a,b in zip(targets,objective.appearance_metrics):
+            torch.testing.assert_close(a,b.reference,rtol=0,atol=0)
+            self.assertFalse(b.reference.requires_grad)
+
 
 if __name__=='__main__':unittest.main()

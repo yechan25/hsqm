@@ -55,22 +55,51 @@ class TopoGuidance(nn.Module):
         """Freeze priorities for ALL backtracking candidates at this timestep."""
         return [[float(s['weight']) for s in row['per_stroke']] for row in details['per_glyph']]
 
+    @staticmethod
+    def _luminance(rgb):
+        bounded=rgb.clamp(0,1)
+        return (bounded*bounded.new_tensor([.299,.587,.114])[None,:,None,None]).sum(1,keepdim=True)
+
+    def _crop_ink(self,luminance,index):
+        x0,y0,x1,y1=self.slots[index]['bbox']
+        if not (0<=x0<x1<=luminance.shape[-1] and 0<=y0<y1<=luminance.shape[-2]):
+            raise ValueError('Crop outside generated sheet')
+        ref=getattr(self,f'reference_{index}')
+        return F.interpolate(1-luminance[...,y0:y1,x0:x1],ref.shape[-2:],mode='bilinear',align_corners=False)
+
+    @torch.no_grad()
+    def calibrate_appearance(self,reference_rgb):
+        """Use this frozen extractor's NORMAL reference response as appearance target.
+
+        The same displayed reference sheet and torch crop/resize are required.
+        This is not a subtraction of a scalar bias: the entire target soft mask
+        is measured once, frozen, and shared by all trajectories/candidates.
+        """
+        luminance=self._luminance(reference_rgb)
+        summary=[]
+        for i in range(len(self.slots)):
+            ref=getattr(self,f'reference_{i}');strokes=getattr(self,f'strokes_{i}')
+            ink=self._crop_ink(luminance,i)
+            target=self.model(ink.float(),ref,strokes)['masks'][0].detach().float()
+            legacy=self.appearance_metrics[i](target[None])['loss'].mean()
+            metric=StrokeAppearanceLoss(target,self.appearance_config).to(target.device)
+            self.appearance_metrics[i]=metric
+            summary.append(dict(slot=i,legacy_reference_error=float(legacy),
+                                calibrated_reference_error=float(metric(target[None])['loss'].mean())))
+        return summary
+
     def forward(self, rgb, return_masks=False, stroke_weights=None):
         if rgb.ndim!=4 or rgb.shape[0]!=1 or rgb.shape[1]!=3:
             raise ValueError('Expected one jointly generated RGB sheet: 1,3,H,W')
         range_loss=(F.relu(-rgb).square()+F.relu(rgb-1).square()).mean()
-        bounded=rgb.clamp(0,1)
-        luminance=(bounded*bounded.new_tensor([.299,.587,.114])[None,:,None,None]).sum(1,keepdim=True)
+        luminance=self._luminance(rgb)
         rows,losses=[],[]
         if stroke_weights is not None and len(stroke_weights)!=len(self.slots):
             raise ValueError('Need stroke weights for each of the four slots')
         for i,(slot,metric) in enumerate(zip(self.slots,self.metrics)):
             ref=getattr(self,f'reference_{i}')
             strokes=getattr(self,f'strokes_{i}')
-            x0,y0,x1,y1=slot['bbox']
-            if not (0<=x0<x1<=rgb.shape[-1] and 0<=y0<y1<=rgb.shape[-2]):
-                raise ValueError('Crop outside generated sheet')
-            ink=F.interpolate(1-luminance[...,y0:y1,x0:x1],ref.shape[-2:],mode='bilinear',align_corners=False)
+            ink=self._crop_ink(luminance,i)
             prediction=self.model(ink.float(),ref,strokes)
             measured=metric(prediction['masks'].float(),return_maps=return_masks)
             if not all(c['pairs'] and c['attachment'] for c in measured['convergence']):

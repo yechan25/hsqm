@@ -157,6 +157,28 @@ class GuidedDDIMTests(unittest.TestCase):
         self.assertLess(final['loss_after'],final['loss_before'])
         self.assertTrue(torch.isfinite(output).all())
 
+    def test_residual_preserving_update_transfers_the_full_clean_correction(self):
+        kwargs=dict(clean_step_ratio=.01,start_fraction=0,end_fraction=1,every=1)
+        _,epsilon_trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=self.objective,config=GuidanceConfig(**kwargs,state_update='epsilon'))
+        output,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=self.objective,config=GuidanceConfig(**kwargs,state_update='clean_residual'))
+        old=next(r for r in epsilon_trace if r['accepted'])
+        new=next(r for r in trace if r['accepted'])
+        self.assertGreater(new['state_delta_rms'],old['state_delta_rms']*3)
+        for r in trace:
+            if not r['accepted']:continue
+            prev=r['timestep']-self.pipe.scheduler.config.num_train_timesteps//self.pipe.scheduler.num_inference_steps
+            alpha=(self.pipe.scheduler.alphas_cumprod[prev] if prev>=0 else self.pipe.scheduler.final_alpha_cumprod)
+            self.assertAlmostEqual(r['state_to_clean_transfer_ratio'],float(alpha.sqrt()),places=4)
+            self.assertLess(r['loss_after'],r['loss_before'])
+        expected,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(noise_ratio=0))
+        disabled,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(clean_step_ratio=0,state_update='clean_residual'))
+        torch.testing.assert_close(expected,disabled,rtol=0,atol=0)
+        self.assertTrue(torch.isfinite(output).all())
+
     def test_half_unet_keeps_sampling_state_and_corrections_in_float32(self):
         self.pipe.unet.half()
         initial=self.initial.half()
@@ -166,6 +188,20 @@ class GuidedDDIMTests(unittest.TestCase):
         accepted=[r for r in trace if r['accepted']]
         self.assertTrue(accepted)
         self.assertTrue(all(r['state_delta_rms']>0 for r in accepted))
+
+    def test_residual_update_uses_scheduler_final_alpha_with_offset_timesteps(self):
+        from diffusers import DDIMScheduler
+        self.pipe.scheduler=DDIMScheduler(num_train_timesteps=1000,clip_sample=False,
+            steps_offset=1,set_alpha_to_one=False,prediction_type='epsilon')
+        self.pipe.scheduler.set_timesteps(30)
+        _,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps[-2:],self.embed,
+            objective=self.objective,config=GuidanceConfig(clean_step_ratio=.01,start_fraction=0,
+                end_fraction=1,every=1,state_update='clean_residual'))
+        final=trace[-1]
+        self.assertEqual(final['timestep'],1)
+        self.assertTrue(final['accepted'])
+        self.assertAlmostEqual(final['state_to_clean_transfer_ratio'],
+            float(self.pipe.scheduler.final_alpha_cumprod.sqrt()),places=4)
 
     def test_missing_objective_cannot_silently_enable_guidance(self):
         with self.assertRaises(ValueError):
@@ -288,7 +324,8 @@ class GuidedDDIMTests(unittest.TestCase):
                  patch('diffusers.StableDiffusionImg2ImgPipeline',fake_class), \
                  patch('diffusion_model.run_topo_guidance.load_topology',return_value=(model,24,1)):
                 report=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'run',steps=8,
-                    canvas_size=48,structure_config=asdict(small),guidance=dict(noise_ratio=.1),compare_uniform=True)
+                    canvas_size=48,structure_config=asdict(small),
+                    guidance=dict(clean_step_ratio=.01,state_update='clean_residual'),compare_uniform=True)
             self.assertEqual(report['status'],'complete')
             self.assertEqual(pipe.encoder_calls,1)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
@@ -303,6 +340,8 @@ class GuidedDDIMTests(unittest.TestCase):
             self.assertEqual({p['method'] for p in report['pages']},
                              {'reference','baseline','uniform_guided','structure_guided','guided'})
             self.assertEqual(report['appearance_weight'],.5)
+            self.assertEqual(report['appearance_target'],'extractor_reference')
+            self.assertTrue(all(r['calibrated_reference_error']==0 for r in report['reference_calibration']))
             self.assertEqual(next(p for p in report['pages'] if p['method']=='structure_guided')['appearance_weight'],0)
             self.assertEqual(report['stroke_focus']['focus_strength'],2.)
             import pandas as pd
@@ -316,6 +355,7 @@ class GuidedDDIMTests(unittest.TestCase):
                 self.assertTrue(np.isfinite(arrays['stroke_rgb_gradients']).all())
                 self.assertEqual(arrays['missing_maps'].shape,(2,24,24))
                 self.assertEqual(arrays['contour_map'].shape,(2,24,24))
+            self.assertTrue((frame[frame.method=='reference']['appearance_loss']==0).all())
             accepted=[json.loads(s) for s in (root/'run/trace_guided.jsonl').read_text().splitlines()
                       if json.loads(s)['accepted']]
             self.assertTrue(accepted)
@@ -331,6 +371,11 @@ class GuidedDDIMTests(unittest.TestCase):
             history=pd.read_csv(root/'run/stroke_guidance_trace.csv')
             self.assertEqual(len(history),8)
             self.assertTrue(history['accepted'].all())
+            from diffusion_model.inspect_guidance_archive import inspect_archive
+            audit=inspect_archive(zip_path,root/'audit')
+            self.assertFalse(audit['resampled'])
+            self.assertTrue(all(r['reference_response_appearance_loss']==0 for r in audit['appearance']
+                                if r['method']=='reference'))
 
 
 if __name__=='__main__':unittest.main()

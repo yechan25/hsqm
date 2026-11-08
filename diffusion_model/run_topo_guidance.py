@@ -33,7 +33,8 @@ def _file_hash(path):
 def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         'stable-diffusion-v1-5/stable-diffusion-v1-5',revision=None,steps=30,canvas_size=576,
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
-        appearance_weight=.5,appearance_config=None,compare_structure=True):
+        appearance_weight=.5,appearance_config=None,compare_structure=True,
+        appearance_target='extractor_reference'):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     selected=list(manifest_rows)
     catalog={row['manifest_row']:row for row in training_catalog(manifest)}
@@ -41,7 +42,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         raise ValueError('Select exactly four distinct training-reference rows')
     if type(steps) is not int or steps<4:raise ValueError('Need at least four nominal steps')
     config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
-            GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1))
+            GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,state_update='clean_residual'))
+    if appearance_target not in ('extractor_reference','partition_reference'):
+        raise ValueError('Unknown appearance target mode')
     structure=StructureConfig(**structure_config) if isinstance(structure_config,dict) else structure_config or StructureConfig()
     appearance=(AppearanceConfig(**appearance_config) if isinstance(appearance_config,dict)
                 else appearance_config or AppearanceConfig())
@@ -78,6 +81,11 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     pipe.vae.to(dtype=torch.float32)
     objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
         appearance_weight=appearance_weight,appearance_config=appearance).to(device).eval()
+    calibration=[]
+    if appearance_target=='extractor_reference':
+        reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
+        calibration=objective.calibrate_appearance(reference_rgb)
+        del reference_rgb
     destination.mkdir(parents=True,exist_ok=False)
     checkpoint_hash=_file_hash(checkpoint)
     initial_hash=tensor_hash(initial)
@@ -89,6 +97,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         guidance_config=asdict(config),structure_config=asdict(structure),extra_weight=extra_weight,
         stroke_focus=focus,compare_uniform=bool(compare_uniform),
         appearance_weight=appearance_weight,appearance_config=asdict(appearance),compare_structure=bool(compare_structure),
+        appearance_target=appearance_target,reference_calibration=calibration,
         primary_signal='frozen Topo soft-mask missing/split/junction',
         primary_score='StructuralIndicator on extracted masks with extra_weight=0',
         gradient_path='clean latent -> fp32 VAE -> four torch crops -> frozen Topo -> stroke loss',
@@ -187,6 +196,12 @@ def evaluate_topo_pair(report_path,checkpoint,*,show=True):
     objective=TopoGuidance(model,slots,StructureConfig(**report['structure_config']),report['extra_weight'],
         **report.get('stroke_focus',{}),appearance_weight=report.get('appearance_weight',0.),
         appearance_config=AppearanceConfig(**report.get('appearance_config',{}))).to(device).eval()
+    if report.get('appearance_target','partition_reference')=='extractor_reference':
+        reference_page=next(p for p in report['pages'] if p['method']=='reference')
+        with Image.open(reference_page['input']) as image:
+            reference_rgb=torch.from_numpy(np.asarray(image.convert('RGB'),np.float32).copy()/255).permute(2,0,1)[None].to(device)
+        objective.calibrate_appearance(reference_rgb)
+        del reference_rgb
     out=Path(report_path).parent/('topo_evaluation_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
     out.mkdir(exist_ok=False);rows=[];stroke_rows=[];snapshots=[]
     for page in report['pages']:
@@ -206,6 +221,7 @@ def evaluate_topo_pair(report_path,checkpoint,*,show=True):
             arrays={key:values[value][0].detach().cpu().numpy() for key,value in
                     [('image','image'),('soft_masks','soft_masks'),('probabilities','probabilities')]}
             arrays.update(reference=slot['reference'],reference_strokes=slot['strokes'])
+            arrays['appearance_reference_masks']=objective.appearance_metrics[i].reference[0].detach().cpu().numpy()
             gradients=[]
             for stroke in values['per_stroke']:
                 stroke_row={key:float(value.detach()) if torch.is_tensor(value) else value for key,value in stroke.items()}
