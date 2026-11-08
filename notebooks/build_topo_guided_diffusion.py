@@ -13,41 +13,23 @@ def build_guided():
         text=text.strip()
         if notebook['cells'][index]['cell_type']=='code':ast.parse(text)
         notebook['cells'][index]['source']=text.splitlines(keepends=True)
-    source(0,'''# 4글자 공동 생성 — Topo 추출 획으로 역확산 유도
+    source(0,'''# 원본 기반 국소 역확산 편집 (실험)
 
-Stable Diffusion 1.5의 **잡음 예측 U-Net + DDIM**, strength **0.65**, seed **100**.
-학습 범위의 기준 글자 4개를 한 장에 놓고 공동 생성합니다. 보정 없음/획 구조 보정/윤곽 보조 보정은
-VAE 샘플링과 잡음 추가까지 완료한 **동일한 초기 잠재값을 복사해** 시작합니다.
+기존 Topo는 사후 획 평가에 사용합니다. 보정은 기준과 비교한 삭제/복원/보호 지도에서 직접 계산합니다.
+후반부 첫 편집 단계에서 지도를 고정하고, 각 단계에서 24회 잠재값을 수정합니다.
+보호 영역의 평균/국소 변화와 잠재값 이동 예산을 제한합니다. 전체 추출 점수 상승은 채택 조건이 아닙니다.
+기준과 생성물의 위치가 맞는 조건을 전제로 하며, 폰트·정렬 차이도 편집 대상으로 잡힐 수 있습니다.
+실제 SD 생성 개선은 실행 후 확인해야 합니다. 새 체크포인트를 학습한 모델은 아닙니다.
 
-각 guidance 단계에서 예상 완성 잠재값 → fp32 VAE → 4칸 torch crop/resize → 동결 Topo
-→ 실제 예측 soft 획의 누락/분리/정션 손실을 계산합니다. 이 손실을 예상 완성 잠재값에
-미분해 잡음 예측을 보정합니다. U-Net을 통한 역전파와 모델 가중치 학습은 하지 않습니다.
-기존 추출 획 손실을 유지하면서, soft 획의 기준 대비 윤곽·국소 잉크량 오차를 보조 손실로 추가합니다.
-이는 기준 형태·글씨체에 가까워지는 유도입니다. 물리적 획 두께 측정이나 새 구조 점수는 아닙니다.
-
-보정량은 예상 완성 잠재값 RMS의 1%에서 시작하며, 같은 시점의 손실이 내려가고
-4글자의 평균 추출 획 점수가 낮아지지 않아야 채택합니다.
-보정한 완성 잠재값을 다음 상태에 넣을 때 U-Net의 잡음 방향을 유지해 보정량 상쇄를 줄입니다.
-윤곽 기준은 정상 기준 이미지에 대한 **같은 Topo의 추출 결과**로 한 번 고정합니다.
-정상 기준의 윤곽 오차는 0인지 확인하고, 기준 마스크 배정 차이를 결함으로 보정하지 않습니다.
-실제 soft 획은 그대로 평가하되, 미분에서는 획 배정을 고정하고 잉크량만 수정합니다.
-원본 해상도에서 새 국소 잉크가 늘어나는 후보를 검사하고, 최종 이미지도 별도로 확인합니다.
-획별 집중은 구조 결함과 윤곽 결함 중 큰 쪽을 사용해 최대 3배 비중을 주고, 후보 비교 중 고정합니다.
-90점 이상인 획이 같은 시점에서 1점 넘게 악화되면 보정을 거부합니다.
-연결 성분 분리·이진 윤곽 점수는 guidance에 사용하지 않습니다. 모델 체크포인트는 읽기만 합니다.
-
-1. 준비·Drive → 2. 기준 자료만 준비(학습 NPZ 일괄 변환 없음)
-3. 정확히 4개 기준 선택 → 4. 세 경로 공동 생성과 원본 비교 → 5. **획별 구조 점수·윤곽 오차·수정 방향** 비교
-
-Colab GPU에서 실행하세요. 역전파가 추가되어 기존 생성보다 느리고 메모리를 더 사용합니다.
-검사는 실제 DDIM과 작은 대체 네트워크를 사용합니다. 사용자의 SD/Topo GPU 결과는
-실행 후 확인해야 하며, 손실 하락은 최종 사람 평가 품질 개선을 보장하지 않습니다.''')
+1→2→3→4→5 순서로 실행합니다. 4번에서 baseline과 국소 편집을 동일 초기 잠재값으로 비교합니다.
+삭제·복원·보호 지도는 local_erase.png / local_fill.png / local_protect.png로 저장됩니다.
+''')
     setup=''.join(notebook['cells'][2]['source'])
     setup=setup.replace('GLYPH_COUNTS = [1, 4, 9]','GLYPH_COUNTS = [4]')
     setup=setup.replace('STRENGTHS = [.65, .85]','STRENGTHS = [.65]')
     setup+='''
 from diffusion_model.run_topo_guidance import generate_guided_pair, evaluate_topo_pair
-GUIDANCE = dict(clean_step_ratio=.01,start_fraction=.30,end_fraction=1.,
+GUIDANCE = dict(local_edit=True,local_iterations=24,clean_step_ratio=.01,start_fraction=.65,end_fraction=1.,
                 every=1,backtracks=5,snapshot_every=4,state_update='clean_residual',
                 healthy_stroke_score=90.,max_healthy_stroke_drop=1.,max_new_local_ink=.002)
 MASK_GRADIENT = 'ink_only'  # Topo 배정을 바꾸려고 입력에 점을 찍는 미분 경로 제한
@@ -55,7 +37,7 @@ DIRECT_REFERENCE = True
 SOURCE_SPILL_WEIGHT = .5  # 기준의 1픽셀 여유 밖 원본 잉크에 별도 보조 손실
 STROKE_FOCUS = dict(focus_strength=2.,max_stroke_weight=3.)
 COMPARE_UNIFORM = False  # 이전 균등 보정까지 추가 비교하려면 True (생성 경로 1개 추가)
-COMPARE_STRUCTURE = True  # 동일 예산·새 잉크 검사로 구조 보정과 윤곽 추가를 비교
+COMPARE_STRUCTURE = False  # 동일 예산·새 잉크 검사로 구조 보정과 윤곽 추가를 비교
 APPEARANCE_WEIGHT = .5  # 0이면 윤곽 보조 손실만 끔
 APPEARANCE_TARGET = 'extractor_reference'  # 정상 기준의 실제 Topo 반응으로 보조 손실 기준 고정
 APPEARANCE_CONFIG = dict(mass_radii=(1,2),mass_allowance=.03,
@@ -94,7 +76,11 @@ for ax,page in zip(axes,generation['pages']):
     ax.set_title(page['method']);ax.axis('off')
 plt.tight_layout();plt.show()
 print('채택된 guidance 단계:',generation['guided_accepted_steps'])
-print('baseline=보정 없음 / structure_guided=획 구조 보정 / guided=윤곽·두께 보조 손실 추가')
+print('baseline=보정 없음 / guided=국소 삭제·복원 반복 보정')
+for name in ('erase','fill','protect'):
+    path=OUTPUT_DIR/f'local_{name}.png'
+    if path.exists():
+        print(name);display(Image.open(path))
 print('보정 전달 방식:',generation['guidance_config']['state_update'])
 print('정상 기준의 윤곽 오차 검증:',generation['reference_calibration'])
 print('최종 원본 잉크 검사:',generation['source_ink_audit'])

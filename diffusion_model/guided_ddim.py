@@ -26,9 +26,13 @@ class GuidanceConfig:
     max_healthy_stroke_drop: float=1.
     state_update: str='epsilon'
     max_new_local_ink: float | None=None
+    local_edit: bool=False
+    local_iterations: int=24
 
     def __post_init__(self):
-        if (not math.isfinite(self.noise_ratio) or self.noise_ratio<0
+        if (type(self.local_iterations) is not int or self.local_iterations<1
+                or (self.local_edit and self.state_update!='clean_residual')
+                or not math.isfinite(self.noise_ratio) or self.noise_ratio<0
                 or (self.clean_step_ratio is not None and
                     (not math.isfinite(self.clean_step_ratio) or self.clean_step_ratio<0))
                 or not 0<=self.start_fraction<self.end_fraction<=1
@@ -93,7 +97,7 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
     # Keep small DDIM state updates in fp32. Only U-Net inputs use model dtype.
     latent=initial.detach().float().clone()
     unet_dtype=next(pipe.unet.parameters()).dtype
-    trace=[];ink_anchor=None
+    trace=[];ink_anchor=None;editor=None
     for index,t in enumerate(timesteps):
         with torch.no_grad():
             inputs=torch.cat([latent,latent]) if cfg_scale>1 else latent
@@ -110,7 +114,28 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
         record=dict(step=index,timestep=int(t),active=active,accepted=False,state_update=config.state_update,
                     base_transition_rms=float((original.prev_sample-latent).square().mean().sqrt()))
         chosen=original
-        if active:
+        if active and config.local_edit:
+            from stroke_model.local_reference_edit import LocalReferenceEdit,optimize_local
+            if objective.source_guard is None:raise ValueError('Local edit requires reference sheet')
+            if editor is None:
+                with torch.no_grad():
+                    anchor=decode_estimate(pipe,original.pred_original_sample)
+                    reference=(1-objective.source_guard.reference_ink).expand_as(anchor)
+                    editor=LocalReferenceEdit(reference,anchor)
+                    objective.local_editor=editor
+            with torch.no_grad():editor.rebase(decode_estimate(pipe,original.pred_original_sample))
+            edited,summary=optimize_local(original.pred_original_sample,
+                lambda z:decode_estimate(pipe,z),editor,iterations=config.local_iterations,
+                step_ratio=config.clean_step_ratio)
+            record.update(summary)
+            if summary['accepted']:
+                delta=edited-original.pred_original_sample
+                prev_t=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
+                a=(scheduler.alphas_cumprod[prev_t] if prev_t>=0 else scheduler.final_alpha_cumprod).to(latent)
+                chosen=type(original)(prev_sample=original.prev_sample+a.sqrt()*delta,
+                                      pred_original_sample=edited)
+                record['state_delta_rms']=float((chosen.prev_sample-original.prev_sample).square().mean().sqrt())
+        elif active:
             # Single-step leaf: never retain the entire denoising trajectory.
             with torch.enable_grad():
                 clean=original.pred_original_sample.detach().float().requires_grad_(True)

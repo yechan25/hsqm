@@ -116,6 +116,20 @@ class GuidedDDIMTests(unittest.TestCase):
         loss=(rgb-.3).square().mean()
         return loss,dict(per_glyph=[dict(slot=0,loss=loss)])
 
+    def test_local_editor_changes_ddim_state(self):
+        from stroke_model.source_ink_guard import SourceInkGuard
+        objective=SimpleNamespace(source_guard=SourceInkGuard(torch.ones(1,3,8,8)))
+        cfg=GuidanceConfig(local_edit=True,local_iterations=8,clean_step_ratio=.01,
+            state_update='clean_residual',start_fraction=.5,end_fraction=1,every=1)
+        baseline,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(noise_ratio=0))
+        edited,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=objective,config=cfg)
+        self.assertTrue(any(r['accepted'] for r in trace))
+        self.assertFalse(torch.equal(baseline,edited))
+        for row in trace:
+            if row['accepted']:self.assertLess(row['loss_after'],row['loss_before'])
+
     def test_zero_guidance_is_bit_identical_to_the_real_ddim_loop(self):
         expected=self.initial.clone()
         with torch.no_grad():

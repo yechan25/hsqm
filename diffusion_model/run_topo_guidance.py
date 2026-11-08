@@ -109,6 +109,8 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
                        if mask_gradient=='ink_only' else
                        'clean latent -> fp32 VAE -> four torch crops -> frozen Topo -> stroke loss'),
         ownership_backward=mask_gradient=='full',
+        editing_mode='local_reference' if config.local_edit else 'topo_gradient',
+        local_edit_limits=dict(budget_ratio=.08,protect_weight=20.,max_protected_rms=.03,max_protected_peak=.12),
         unet_backward=False,weights_updated=False,denoise_eta=0.,cfg_scale=7.5,
         vae_decode_dtype='float32',ddim_state_dtype='float32',
         unet_dtype=str(next(pipe.unet.parameters()).dtype).replace('torch.',''),
@@ -151,6 +153,12 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
 
     def callback(method):
         def step(record,before,after):
+            editor=getattr(objective,'local_editor',None)
+            if editor is not None and not (destination/'local_edit_maps.npz').exists():
+                maps={name:getattr(editor,name).detach().cpu().numpy() for name in ('erase','fill','protect')}
+                np.savez_compressed(destination/'local_edit_maps.npz',**maps)
+                for name,values in maps.items():
+                    Image.fromarray((values[0,0]*255).astype(np.uint8)).save(destination/f'local_{name}.png')
             print(f"{method} {record['step']+1}/{len(timesteps)} | guidance={record['accepted']} "
                   f"| loss={record.get('loss_before')} -> {record.get('loss_after')}",flush=True)
             with (destination/f'trace_{method}.jsonl').open('a',encoding='utf-8') as stream:
