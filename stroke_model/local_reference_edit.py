@@ -50,15 +50,26 @@ def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio
         if not torch.isfinite(gradient).all():raise FloatingPointError('Nonfinite local edit gradient')
         norm=gradient.square().mean().sqrt()
         if norm<1e-12:break
+        # Search from the last feasible state. A large normalized step can
+        # cross the protection boundary; shrinking it retains useful progress.
+        moved=False
         with torch.no_grad():
-            current=leaf-step_ratio*scale*gradient/norm
-            delta=current-origin
-            current=origin+delta*(budget_ratio*scale/delta.square().mean().sqrt().clamp_min(1e-12)).clamp(max=1)
-            values=editor.measure(decode(current))
-            row={k:float(v) for k,v in values.items()}
-            ok=(row['protected']**.5<=max_protected_rms and row['peak']<=max_protected_peak)
-            row.update(iteration=index,feasible=ok,accepted=ok and row['edit']<best_error)
-            history.append(row)
-            if row['accepted']:best=current.clone();best_error=row['edit']
+            for attempt in range(7):
+                candidate=leaf-step_ratio*(.5**attempt)*scale*gradient/norm
+                delta=candidate-origin
+                candidate=origin+delta*(budget_ratio*scale/delta.square().mean().sqrt().clamp_min(1e-12)).clamp(max=1)
+                values=editor.measure(decode(candidate))
+                row={k:float(v) for k,v in values.items()}
+                ok=(row['protected']**.5<=max_protected_rms and row['peak']<=max_protected_peak)
+                energy=row['edit']+protect_weight*(row['protected']+row['peak']**2)
+                accept=ok and row['edit']<best_error and energy<float(loss.detach())
+                row.update(iteration=index,backtrack=attempt,feasible=ok,accepted=accept,
+                           step_ratio=step_ratio*(.5**attempt))
+                history.append(row)
+                if accept:
+                    current=candidate.clone();best=current.clone();best_error=row['edit']
+                    moved=True
+                    break
+        if not moved:break
     return best,dict(accepted=best_error<float(before['edit']),loss_before=float(before['edit']),
                      loss_after=best_error,local_iterations=history)

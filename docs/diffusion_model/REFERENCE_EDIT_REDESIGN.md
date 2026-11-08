@@ -45,3 +45,10 @@ local_reference_edit.py와 GuidanceConfig(local_edit=True)를 추가했다. 현�
 현재 erase/fill 각각의 전체 영역 면적으로 정규화한다. 결함 연결 성분별 정규화와 학습된 편집 헤드는 아직 구현하지 않았다. 자동 정렬도 추가하지 않았으므로 위치가 다른 폰트에는 주의가 필요하다. 범위 밖 decoder RGB에서도 미분이 사라지지 않도록 편집 손실에는 clamp를 적용하지 않는다.
 
 첨부 guidance_debug (3).zip에 대한 지도는 outputs/local_edit_audit/ga_edit_maps.png에 저장했다. 왼쪽 돌출을 삭제 대상으로 포착하나 ㄱ 끝과 획 길이 차이도 감지한다. 지도 시각 검수와 합성/대체 네트워크 테스트는 실제 SD VAE 보정 성공과 다르다. 실제 GPU/사용자 체크포인트 실행은 검증하지 않았다.
+
+
+## Round 4 refinement
+
+Archive guidance_debug (4).zip: 7/7 active steps accepted. In the largest erase component of the first glyph (511 pixels), mean ink fell from 0.80324 to 0.21437 and pixels above 0.5 ink fell from 427 to 12. The final native excess-ink guard still failed (0.003706 versus 0.002); this is not a complete success. Later fixed-size optimizer candidates repeatedly exceeded the protected local peak bound.
+
+The optimizer now backtracks up to six halvings from its last feasible state. Both edit error and the protected objective must decrease, within the unchanged protection/latent limits. Rejected states are no longer used as the next iterate. Logs include attempt size and backtrack index. This is a targeted experimental refinement; no GPU comparison against round 4 has been performed locally.

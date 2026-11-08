@@ -26,6 +26,18 @@ class LocalEditTests(unittest.TestCase):
         out,t=optimize_local(z,lambda v:bad+(v-1),e,iterations=10,
             max_protected_rms=0,max_protected_peak=0)
         self.assertFalse(t['accepted']);self.assertTrue(torch.equal(out,z))
+    def test_backtracking_recovers_feasible_smaller_step(self):
+        ref,bad=self.sample();e=LocalReferenceEdit(ref,bad)
+        z=torch.ones(1)
+        out,t=optimize_local(z,lambda v:bad+(v-1),e,iterations=3,
+            step_ratio=.1,budget_ratio=.5,protect_weight=.01,
+            max_protected_rms=.02,max_protected_peak=.03)
+        self.assertTrue(t['accepted'])
+        self.assertTrue(any(r['accepted'] and r['backtrack']>0 for r in t['local_iterations']))
+        m=e.measure(bad+(out-1))
+        self.assertLessEqual(float(m['protected'])**.5,.02)
+        self.assertLess(float(m['edit']),float(e.measure(bad)['edit']))
+
     def test_maps_stay_fixed_after_rebase(self):
         ref,bad=self.sample();e=LocalReferenceEdit(ref,bad);mask=e.erase.clone()
         e.rebase(ref);self.assertTrue(torch.equal(mask,e.erase))
