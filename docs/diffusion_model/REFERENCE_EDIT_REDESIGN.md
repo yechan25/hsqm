@@ -57,3 +57,8 @@ The optimizer now backtracks up to six halvings from its last feasible state. Bo
 ## Extended denoising preset
 
 The guided notebook now sets STEPS=60 (previously 30). With strength=0.65, Diffusers uses 39 actual DDIM timesteps instead of 19. Keeping start_fraction=0.65 and every=1 yields 14 active edit opportunities instead of 7; each retains its 24-iteration maximum, backtracking, and unchanged protection limits. Seed remains 100, and baseline/guided share the same initial latent within the new run. Different timestep grids can change the start noise level, so old 30-step outputs are not an exact matched-start ablation. The notebook prints the actual step count; generation_report.json retains exact timesteps and the configuration. More denoising provides more opportunities and costs more time; improved removal is not yet GPU-validated.
+
+
+## Residual removal preset
+
+After the 60-step screenshot still showed a pale left spur, the notebook preset was increased to nominal STEPS=100: 65 actual DDIM steps, 23 late editing opportunities, and up to 48 local iterations per opportunity. This replaces 39 actual steps, 14 opportunities, and 24 local iterations. The strength, seed, map threshold, step size, latent budget, and protection bounds are unchanged. Inner optimization still stops early when it cannot find a feasible improving step; more iterations do not guarantee further removal. Maximum local iteration opportunities rise from 336 to 1104, so runtime can increase substantially. The screenshot alone cannot establish whether the residual is inside the fixed edit map or limited by protection/latent constraints; the next trace and maps are needed to distinguish those cases. No new GPU validation has been performed.
