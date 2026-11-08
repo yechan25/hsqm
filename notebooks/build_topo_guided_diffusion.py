@@ -51,6 +51,7 @@ GUIDANCE = dict(clean_step_ratio=.01,start_fraction=.30,end_fraction=1.,
                 every=1,backtracks=5,snapshot_every=4,state_update='clean_residual',
                 healthy_stroke_score=90.,max_healthy_stroke_drop=1.,max_new_local_ink=.002)
 MASK_GRADIENT = 'ink_only'  # Topo 배정을 바꾸려고 입력에 점을 찍는 미분 경로 제한
+DIRECT_REFERENCE = True
 SOURCE_SPILL_WEIGHT = .5  # 기준의 1픽셀 여유 밖 원본 잉크에 별도 보조 손실
 STROKE_FOCUS = dict(focus_strength=2.,max_stroke_weight=3.)
 COMPARE_UNIFORM = False  # 이전 균등 보정까지 추가 비교하려면 True (생성 경로 1개 추가)
@@ -69,6 +70,10 @@ EXTRA_AUX_WEIGHT = .05
     source(3,preview)
     source(4,'''
 from datetime import datetime
+import inspect
+from diffusion_model.run_topo_guidance import generate_guided_pair, evaluate_topo_pair
+if 'direct_reference' not in inspect.signature(generate_guided_pair).parameters:
+    raise RuntimeError('실행 코드가 이전 버전입니다. 최신 노트북에서 1 → 2 → 3 → 4번 셀을 다시 실행하세요.')
 from huggingface_hub import model_info
 MODEL_REVISION = model_info(MODEL_ID).sha
 OUTPUT_DIR = HSQM/'topo_guided_diffusion'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -78,7 +83,7 @@ generation = generate_guided_pair(TRAIN_MANIFEST,list(reference_select.value),CH
     stroke_focus=STROKE_FOCUS,compare_uniform=COMPARE_UNIFORM,
     appearance_weight=APPEARANCE_WEIGHT,appearance_config=APPEARANCE_CONFIG,
     compare_structure=COMPARE_STRUCTURE,appearance_target=APPEARANCE_TARGET,
-    mask_gradient=MASK_GRADIENT,source_spill_weight=SOURCE_SPILL_WEIGHT)
+    mask_gradient=MASK_GRADIENT,source_spill_weight=SOURCE_SPILL_WEIGHT,direct_reference=DIRECT_REFERENCE)
 generation['data_preparation']=preparation
 (OUTPUT_DIR/'generation_report.json').write_text(json.dumps(generation,ensure_ascii=False,indent=2),encoding='utf-8')
 (OUTPUT_DIR/'git_commit.txt').write_text(commit,encoding='utf-8')

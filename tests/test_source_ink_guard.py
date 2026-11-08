@@ -22,6 +22,18 @@ class InkGuardTests(unittest.TestCase):
         ok,increase,violation,_=local_ink_change(normal['local_excess'],bad['local_excess'],None,.002)
         self.assertFalse(ok);self.assertGreater(increase,.002);self.assertGreater(violation,0)
 
+    def test_direct_reference_gradient(self):
+        ref=torch.ones(1,3,16,16);ref[:,:,5:11,7:9]=0
+        guard=SourceInkGuard(ref,support_radius=0,direct=True)
+        image=ref.clone();image[:,:,2:4,2:4]=0;image[:,:,6:8,7:9]=1
+        image.requires_grad_(True)
+        loss=guard(image)['loss']
+        grad,=torch.autograd.grad(loss,image)
+        self.assertLess(float(grad[:,:,2:4,2:4].sum()),0)
+        self.assertGreater(float(grad[:,:,6:8,7:9].sum()),0)
+        self.assertLess(float(guard((image-.1*grad).detach())['loss']),float(loss.detach()))
+        self.assertEqual(float(guard(ref)['loss']),0)
+
     def test_small_changes_cannot_accumulate_past_the_anchor(self):
         before=torch.zeros(1,1,3,3)
         ok,_,_,anchor=local_ink_change(before,before+.001,None,.002)

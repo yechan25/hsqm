@@ -266,3 +266,9 @@ ZIP만으로 이전 결과를 재분석하려면 다음을 실행한다:
 참고: [Universal Guidance](https://arxiv.org/abs/2302.07121),
 [Diffusers 0.35.1 img2img](https://github.com/huggingface/diffusers/blob/v0.35.1/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_img2img.py),
 [DDIM](https://github.com/huggingface/diffusers/blob/v0.35.1/src/diffusers/schedulers/scheduling_ddim.py).
+
+
+### Direct reference correction (experimental)
+Notebook DIRECT_REFERENCE=True enables native ink extra/missing squared error, normalized by reference ink area and weighted by SOURCE_SPILL_WEIGHT. Extra is relu(ink - dilated reference); missing is relu(reference - ink). Existing acceptance guards remain active. Set False for the previous objective. This inference guidance requires aligned references and can constrain style. It is not a newly trained checkpoint; final diffusion quality still requires GPU evaluation.
+
+If cell 4 reports an unexpected direct_reference argument, reopen the latest notebook and rerun cells 1 through 4. Cell 1 clones current main and clears cached project modules; rerunning cell 4 alone cannot update old source files.

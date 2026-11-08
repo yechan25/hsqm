@@ -16,7 +16,7 @@ from .source_ink_guard import SourceInkGuard
 class TopoGuidance(nn.Module):
     def __init__(self, model, slots, structure_config=None, extra_weight=.05, range_weight=.01,
                  focus_strength=0., max_stroke_weight=3.,appearance_weight=0.,appearance_config=None,
-                 mask_gradient='full',source_spill_weight=0.):
+                 mask_gradient='full',source_spill_weight=0.,direct_reference=False):
         super().__init__()
         if len(slots)!=4:raise ValueError('This experiment requires exactly four glyph slots')
         self.model=model.eval().requires_grad_(False)
@@ -32,6 +32,7 @@ class TopoGuidance(nn.Module):
         if not math.isfinite(self.source_spill_weight) or self.source_spill_weight<0:
             raise ValueError('Source spill weight must be finite and nonnegative')
         self.source_guard=None
+        self.direct_reference=direct_reference
         if not math.isfinite(self.appearance_weight) or self.appearance_weight<0:
             raise ValueError('Appearance weight must be finite and nonnegative')
         self.extra_weight=float(extra_weight)
@@ -98,7 +99,7 @@ class TopoGuidance(nn.Module):
         return summary
 
     def set_reference_sheet(self,reference_rgb):
-        self.source_guard=SourceInkGuard(reference_rgb).to(reference_rgb.device)
+        self.source_guard=SourceInkGuard(reference_rgb,direct=self.direct_reference).to(reference_rgb.device)
 
     def forward(self, rgb, return_masks=False, stroke_weights=None):
         if rgb.ndim!=4 or rgb.shape[0]!=1 or rgb.shape[1]!=3:

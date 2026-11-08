@@ -7,11 +7,12 @@ from .source_quality_v5 import foreground_evidence
 
 
 class SourceInkGuard(nn.Module):
-    def __init__(self,reference_rgb,support_radius=1,patch_radius=2):
+    def __init__(self,reference_rgb,support_radius=1,patch_radius=2, direct=False):
         super().__init__()
         if any(type(r) is not int or r<0 for r in (support_radius,patch_radius)):
             raise ValueError('Ink guard radii must be nonnegative integers')
         self.support_radius=support_radius;self.patch_radius=patch_radius
+        self.direct=direct
         ink=self.ink(reference_rgb).detach()
         self.register_buffer('reference_ink',ink.clone())
         self.register_buffer('support',F.max_pool2d(ink,2*support_radius+1,1,support_radius))
@@ -25,9 +26,15 @@ class SourceInkGuard(nn.Module):
     def forward(self,rgb):
         ink=self.ink(rgb)
         if ink.shape!=self.reference_ink.shape:raise ValueError('Ink guard sheet size changed')
-        excess=F.relu(foreground_evidence(ink)-self.support).square()
+        extra=F.relu(ink-self.support)
+        missing=F.relu(self.reference_ink-ink)
+        excess=(extra if self.direct else F.relu(foreground_evidence(ink)-self.support)).square()
         local=F.avg_pool2d(excess,2*self.patch_radius+1,1,self.patch_radius)
-        return dict(loss=excess.sum()/self.reference_ink.sum().clamp_min(1),local_excess=local)
+        denom=self.reference_ink.sum().clamp_min(1)
+        loss=excess.sum()/denom
+        if self.direct:
+            loss=loss+missing.square().sum()/denom
+        return dict(loss=loss,local_excess=local,extra_map=extra,missing_map=missing)
 
 
 def local_ink_change(before,after,anchor,allowance):

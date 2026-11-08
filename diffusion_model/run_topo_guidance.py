@@ -34,7 +34,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         'stable-diffusion-v1-5/stable-diffusion-v1-5',revision=None,steps=30,canvas_size=576,
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
-        appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5):
+        appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     selected=list(manifest_rows)
     catalog={row['manifest_row']:row for row in training_catalog(manifest)}
@@ -82,7 +82,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     pipe.vae.to(dtype=torch.float32)
     objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
         appearance_weight=appearance_weight,appearance_config=appearance,mask_gradient=mask_gradient,
-        source_spill_weight=source_spill_weight).to(device).eval()
+        source_spill_weight=source_spill_weight,direct_reference=direct_reference).to(device).eval()
     calibration=[]
     reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
     if appearance_target=='extractor_reference':
@@ -101,7 +101,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         stroke_focus=focus,compare_uniform=bool(compare_uniform),
         appearance_weight=appearance_weight,appearance_config=asdict(appearance),compare_structure=bool(compare_structure),
         appearance_target=appearance_target,reference_calibration=calibration,
-        mask_gradient=mask_gradient,source_spill_weight=source_spill_weight,
+        mask_gradient=mask_gradient,source_spill_weight=source_spill_weight,direct_reference=direct_reference,
         source_ink_guard=dict(support_radius=1,patch_radius=2),
         primary_signal='frozen Topo soft-mask missing/split/junction',
         primary_score='StructuralIndicator on extracted masks with extra_weight=0',
@@ -217,7 +217,8 @@ def evaluate_topo_pair(report_path,checkpoint,*,show=True):
     objective=TopoGuidance(model,slots,StructureConfig(**report['structure_config']),report['extra_weight'],
         **report.get('stroke_focus',{}),appearance_weight=report.get('appearance_weight',0.),
         appearance_config=AppearanceConfig(**report.get('appearance_config',{})),
-        mask_gradient=report.get('mask_gradient','full'),source_spill_weight=report.get('source_spill_weight',0.)).to(device).eval()
+        mask_gradient=report.get('mask_gradient','full'),source_spill_weight=report.get('source_spill_weight',0.),
+        direct_reference=report.get('direct_reference',False)).to(device).eval()
     if report.get('appearance_target','partition_reference')=='extractor_reference':
         reference_page=next(p for p in report['pages'] if p['method']=='reference')
         with Image.open(reference_page['input']) as image:
