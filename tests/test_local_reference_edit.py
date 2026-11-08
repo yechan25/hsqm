@@ -65,6 +65,20 @@ class LocalEditTests(unittest.TestCase):
         self.assertTrue(torch.equal(out[:,:,4:28,16:19],ref[:,:,4:28,16:19]))
         self.assertIn(t['stop_reason'],('iteration_limit','zero_gradient','protection_limit','no_feasible_descent'))
 
+    def test_tail_focuses_gradient_on_remaining_dark_patch(self):
+        ref,bad=self.sample()
+        plain=LocalReferenceEdit(ref,bad,erase_l1_weight=.5)
+        focused=LocalReferenceEdit(ref,bad,erase_l1_weight=.5,erase_tail_weight=.5)
+        current=ref.clone();current[:,:,14:17,9:16]=.98;current[:,:,15:16,10:11]=.8
+        x=current.requires_grad_(True)
+        g0,=torch.autograd.grad(plain.measure(x)['edit'],x)
+        g1,=torch.autograd.grad(focused.measure(x)['edit'],x)
+        self.assertGreater(float(g1[:,:,15:16,10:11].abs().sum()),float(g0[:,:,15:16,10:11].abs().sum())*2)
+        focused.rebase(current.detach())
+        out,t=optimize_local(current.detach(),lambda z:z,focused,iterations=48)
+        self.assertLess(t['erase_tail_after'],t['erase_tail_before'])
+        self.assertTrue(torch.equal(out[:,:,4:28,16:19],ref[:,:,4:28,16:19]))
+
     def test_maps_stay_fixed_after_rebase(self):
         ref,bad=self.sample();e=LocalReferenceEdit(ref,bad);mask=e.erase.clone()
         e.rebase(ref);self.assertTrue(torch.equal(mask,e.erase))

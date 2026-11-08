@@ -5,10 +5,12 @@ from torch.nn import functional as F
 
 
 class LocalReferenceEdit:
-    def __init__(self, reference, anchor, threshold=.2, radius=1, halo_radius=0, erase_l1_weight=0.):
+    def __init__(self, reference, anchor, threshold=.2, radius=1, halo_radius=0, erase_l1_weight=0., erase_tail_weight=0.):
         if reference.shape != anchor.shape or reference.ndim != 4 or reference.shape[1] != 3:
             raise ValueError('Matching BCHW RGB sheets required')
         if not math.isfinite(erase_l1_weight) or erase_l1_weight<0:raise ValueError("Invalid erase L1 weight")
+        if not math.isfinite(erase_tail_weight) or erase_tail_weight<0:raise ValueError("Invalid erase tail weight")
+        self.erase_tail_weight=erase_tail_weight
         self.erase_l1_weight=erase_l1_weight
         self.anchor=anchor.detach()
         self.reference=reference.detach()
@@ -35,6 +37,9 @@ class LocalReferenceEdit:
         error=(rgb-self.target).square().mean(1,keepdim=True)
         erase=(error*self.erase).sum()/self.erase.sum().clamp_min(1)
         erase_l1=((rgb-1).abs().mean(1,keepdim=True)*self.erase).sum()/self.erase.sum().clamp_min(1)
+        errors=(rgb-1).abs().mean(1,keepdim=True)[self.erase.bool()]
+        erase_tail=(errors.topk(max(1,math.ceil(errors.numel()*.1))).values.mean()
+                    if errors.numel() else rgb.sum()*0)
         residual=(1-rgb.clamp(0,1)).mean(1,keepdim=True)*self.erase
         residual_mean=residual.sum()/self.erase.sum().clamp_min(1)
         residual_peak=residual.amax()
@@ -42,7 +47,8 @@ class LocalReferenceEdit:
         change=(rgb-self.anchor).square().mean(1,keepdim=True)*self.protect
         protected=change.sum()/self.protect.sum().clamp_min(1)
         peak=F.avg_pool2d(change,5,1,2).amax().clamp_min(1e-12).sqrt()
-        return dict(edit=erase+fill+self.erase_l1_weight*erase_l1,erase=erase,erase_l1=erase_l1,
+        return dict(edit=erase+fill+self.erase_l1_weight*erase_l1+self.erase_tail_weight*erase_tail,
+                    erase_tail=erase_tail,erase=erase,erase_l1=erase_l1,
                     residual_mean=residual_mean,residual_peak=residual_peak,
                     fill=fill,protected=protected,peak=peak)
 
@@ -92,6 +98,7 @@ def optimize_local(clean,decode,editor,iterations=24,step_ratio=.01,budget_ratio
             break
     with torch.no_grad():final=editor.measure(decode(best))
     return best,dict(stop_reason=stop_reason,
+                     erase_tail_before=float(before['erase_tail']),erase_tail_after=float(final['erase_tail']),
                      residual_mean_before=float(before['residual_mean']),
                      residual_mean_after=float(final['residual_mean']),
                      residual_peak_after=float(final['residual_peak']),

@@ -120,7 +120,7 @@ class GuidedDDIMTests(unittest.TestCase):
         from stroke_model.source_ink_guard import SourceInkGuard
         objective=SimpleNamespace(source_guard=SourceInkGuard(torch.ones(1,3,8,8)))
         cfg=GuidanceConfig(local_edit=True,local_iterations=8,local_halo_radius=2,
-            local_final_iterations=12,local_erase_l1_weight=.5,clean_step_ratio=.01,
+            local_final_iterations=12,local_erase_l1_weight=.5,local_erase_tail_weight=.5,clean_step_ratio=.01,
             state_update='clean_residual',start_fraction=.5,end_fraction=1,every=1)
         baseline,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
             config=GuidanceConfig(noise_ratio=0))
