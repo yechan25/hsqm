@@ -35,8 +35,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
         appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False,
-        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100):
+        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
+    if not np.isfinite(strength) or not 0<strength<=1:raise ValueError('strength must be in (0,1]')
     if type(seed) is not int or seed<0:raise ValueError('Nonnegative integer seed required')
     if guidance_signal not in ('pixel_control','template_structure'):raise ValueError('Unknown guidance signal')
     if init_mode not in ('reference','external','noise'):raise ValueError('Unknown initialization mode')
@@ -97,7 +98,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
                 with Image.open(input_sheet) as source:
                     if source.size!=initial_image.size:raise ValueError('External sheet must match canvas size')
                     starting_image=source.convert('RGB')
-            timesteps,effective_steps=pipe.get_timesteps(steps,.65,device)
+            timesteps,effective_steps=pipe.get_timesteps(steps,strength,device)
             initial=pipe.prepare_latents(pipe.image_processor.preprocess(starting_image),timesteps[:1],
                 1,1,embeddings.dtype,device,torch.Generator('cpu').manual_seed(seed))
     # Encoding stays identical to ordinary fp16 img2img. Decode BOTH runs in fp32
@@ -127,7 +128,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         experiment='paired_joint_topo_backward_guidance',status='running',model_id=model_id,
         requested_revision=revision,checkpoint=str(checkpoint),checkpoint_sha256=checkpoint_hash,
         checkpoint_epoch=epoch,training_manifest=str(manifest),selected_manifest_rows=selected,
-        seed=seed,strength=.65,glyph_count=4,steps=steps,effective_steps=int(effective_steps),
+        seed=seed,strength=strength,glyph_count=4,steps=steps,effective_steps=int(effective_steps),
         timesteps=[int(t) for t in timesteps],initial_latent_sha256=initial_hash,
         guidance_config=asdict(config),structure_config=asdict(structure),extra_weight=extra_weight,
         stroke_focus=focus,compare_uniform=bool(compare_uniform),
@@ -153,7 +154,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         report.update(editing_mode='template_normalized_geometry',primary_signal='frozen extractor normalized geometry descriptors',
             primary_score='descriptor loss (not calibrated quality)',ownership_backward=False,
             gradient_path='clean latent -> VAE -> ink with detached extractor ownership -> normalized descriptors',
-            strength=None if init_mode=='noise' else .65)
+            strength=None if init_mode=='noise' else strength)
 
     def write_report():
         (destination/'generation_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -162,7 +163,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     def save_page(image,method,filtered=None):
         nonlocal baseline_source_map
         page_id=len(report['pages']);path=destination/f'page_{page_id:03d}_{method}.png';image.save(path)
-        label=f'{method} | 4 glyphs | '+('noise initialization' if init_mode=='noise' else 'strength=.65')+f' seed={seed}'
+        label=f'{method} | 4 glyphs | '+('noise initialization' if init_mode=='noise' else f'strength={strength}')+f' seed={seed}'
         page=dict(page_id=page_id,method=method,label=label,input=str(path),glyph_count=4,
                   control=method=='reference',guidance_on=method!='baseline' and method!='reference',initial_latent_sha256=initial_hash,
                   appearance_weight=appearance_weight if method=='guided' else 0.)
@@ -190,7 +191,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
             np.savez_compressed(str(prefix)+'.npz',image=ink,reference=slot['reference'],reference_strokes=slot['strokes'])
             report['results'].append(dict(**slot['entry'],input=str(prefix)+'_raw.png',npz=str(prefix)+'.npz',
                 page_id=page_id,page_input=str(path),glyph_count=4,slot=slot['slot'],crop_bbox=slot['bbox'],
-                method=method,guidance_on=method not in ('baseline','reference'),control=method=='reference',strength=None if init_mode=='noise' else .65,seed=seed,
+                method=method,guidance_on=method not in ('baseline','reference'),control=method=='reference',strength=None if init_mode=='noise' else strength,seed=seed,
                 safety_filtered=filtered,label=label+f' | slot={slot["slot"]+1}'))
         write_report()
 

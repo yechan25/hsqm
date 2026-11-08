@@ -373,8 +373,19 @@ class GuidedDDIMTests(unittest.TestCase):
                 self.assertEqual(general['editing_mode'],'template_normalized_geometry')
                 self.assertEqual(len(general['structure_audit']),3)
                 self.assertEqual(len({p['initial_latent_sha256'] for p in general['pages']}),1)
+                self.assertEqual(pipe.encoder_calls,1)
+                external=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'external',steps=8,
+                    canvas_size=48,guidance_signal='template_structure',init_mode='external',
+                    input_sheet=root/'run/page_001_baseline.png',strength=.35,
+                    guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=None),
+                    compare_structure=False)
+                self.assertFalse(external['reference_encoded_as_input'])
+                self.assertEqual(external['strength'],.35)
+                self.assertEqual(external['effective_steps'],2)
+                self.assertTrue((root/'external/external_input.png').exists())
+
             self.assertEqual(report['status'],'complete')
-            self.assertEqual(pipe.encoder_calls,1)
+            self.assertEqual(pipe.encoder_calls,2)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
             self.assertEqual(len({p['initial_latent_sha256'] for p in report['pages']}),1)
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')

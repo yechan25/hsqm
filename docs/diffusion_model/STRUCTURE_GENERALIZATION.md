@@ -11,9 +11,9 @@ This separate experiment retains the known-reference pixel correction notebook a
 
 ## Initialization and evaluation
 
-Default init_mode=noise uses a seeded Gaussian latent and ALL DDIM timesteps. It never calls VAE encoding on the standard image. The user must enter the correct four-character prompt in the same order as the selected templates. The known template still conditions stroke extraction: this is not reference-free recognition.
+Optional init_mode=noise uses a seeded Gaussian latent and ALL DDIM timesteps. It never calls VAE encoding on the standard image. The user must enter the correct four-character prompt in the same order as the selected templates. The known template still conditions stroke extraction: this is not reference-free recognition.
 
-init_mode=external accepts a separate RGB sheet (same canvas size, fixed 2x2 character order). This permits a different font without providing its clean target or stroke masks. Arbitrary natural-image text detection/cropping is not implemented. External initialization files are saved for reproducibility. The reference mode remains available as an explicit control.
+Default init_mode=external accepts a separate RGB sheet (same canvas size, fixed 2x2 character order). This permits a different font without providing its clean target or stroke masks. Arbitrary natural-image text detection/cropping is not implemented. External initialization files are saved for reproducibility. The reference mode remains available as an explicit control.
 
 Each baseline/guided pair shares one initial latent. seed is configurable. Retain all seeds and failures; template-aligned placement, legibility, extra/missing strokes, normal-stroke damage and font-style drift need visual or independent annotation. The optimization descriptor loss must not be the sole success metric. Existing native pixel difference audits are auxiliary only and do not control acceptance in the new mode. The new notebook reports descriptor_scores.csv and downloads a structure debug ZIP; the old pixel-based evaluation notebook is not presented as a generalization score.
 
@@ -22,3 +22,10 @@ The catalog currently supplies TRAIN templates. This tests generation/font/seed 
 ## Local validation
 
 Tests check translation invariance of descriptors, ink-scale invariance of moment components, finite empty-mask values/gradients, and sensitivity/gradient to a wrong-side horizontal extension. A mocked paired pipeline checks noise initialization makes no additional reference VAE encode call, uses the complete schedule, shares initial latents and emits the structure audit. These checks validate implementation paths, not research performance.
+
+
+## Cross-font default after text generation failure
+
+The user run produced a table of pseudo-text rather than four characters; fixed crops therefore did not contain the assumed target characters. That noise-initialized result cannot establish successful or failed stroke correction independently of text-generation failure. The default now creates an independent-font sheet (NanumMyeongjo by default, selectable) from four user-entered characters, with centered placement independent of template ink bounding boxes, and uses external initialization at strength=0.35. Entered characters must match the four selected templates in order. Font identity and hash are saved. Input pixels are encoded as img2img conditioning, not supplied as an optimization target; only template geometry descriptors guide the output. This is cross-font transfer testing, not general text-to-image or unseen-font validation (training-font membership still needs auditing).
+
+The four displayed panels are template, independently rendered input, baseline and guided. Noise mode remains optional. Prompt is prefilled for input preservation, so users need not engineer a prompt to make the initial characters exist. Strength is an explicit runner argument and is recorded accurately. Default nominal 50 steps gives 17 img2img steps at strength=0.35. Inspect both baseline and guided: the descriptor is still only a proxy and style drift must be checked.
