@@ -15,10 +15,10 @@ from .convert_reference_csv import convert_csv, existing_path
 ARCHIVES = ('input_stroke.zip', 'input.zip', 'target_stroke.zip', 'target.zip')
 
 
-def discover_archives(source):
+def discover_archives(source, roles=ARCHIVES):
     """Discover every supported archive recursively, regardless of name/count."""
     paths = []
-    for name in ARCHIVES:
+    for name in roles:
         role = Path(name).stem
         try:
             folder = existing_path(source / role)
@@ -95,17 +95,20 @@ def find_csv(source, raw, csv_path=None):
     return candidates[0]
 
 
-def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=None, size=128, seed=42,
-                        independent=False):
+def stage_stroke_archives(source, local_root='/content/hsqm_stroke_zip', roles=None):
+    """Share the training archive cache while staging only requested roles."""
     source = existing_path(source)
     paths = discover_archives(source)
-    print('사용할 압축 파일:', len(paths), '개', flush=True)
     signature = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
     key = hashlib.sha256(b'archive_layout2:' + json.dumps(signature).encode()).hexdigest()[:16]
     cache = Path(local_root) / key
     raw = cache / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
+    allowed = set(discover_archives(source, roles=roles)) if roles is not None else set(paths)
+    print('사용할 압축 파일:',len(allowed),'개 / 전체',len(paths),'개',flush=True)
     for path in paths:
+        if path not in allowed:
+            continue
         # Different folders may contain archives with identical filenames.
         archive_id = hashlib.sha256(path.relative_to(source).as_posix().encode()).hexdigest()[:16]
         destination = raw / archive_id
@@ -133,6 +136,13 @@ def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=
         (temporary / '.complete.json').write_text(json.dumps(before), encoding='utf-8')
         temporary.rename(destination)
         local_zip.unlink()  # Keep extracted images, reclaim the local archive space.
+    return cache, raw, signature
+
+
+def prepare_stroke_zips(source, local_root='/content/hsqm_stroke_zip', csv_path=None, size=128, seed=42,
+                        independent=False):
+    source = existing_path(source)
+    cache, raw, signature = stage_stroke_archives(source, local_root)
     selected = find_csv(source, raw, csv_path)
     content = selected.read_bytes()
     conversion_key = hashlib.sha256(content + f'converter3:{size}:{seed}:{independent}'.encode()).hexdigest()[:16]

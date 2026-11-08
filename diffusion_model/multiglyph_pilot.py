@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .score_pilot import training_catalog, scored_ink
+from .score_pilot import training_catalog, scored_ink, load_catalog_reference
 
 
 def compose_sheet(entries, canvas_size=576, cell_pixels=None):
@@ -24,8 +24,7 @@ def compose_sheet(entries, canvas_size=576, cell_pixels=None):
     sheet = Image.new('RGB', (pixels*side, pixels*side), 'white')
     slots = []
     for index, entry in enumerate(entries):
-        with np.load(entry['path'], allow_pickle=False) as data:
-            reference, strokes = [data[key].astype(np.float32) for key in ('reference', 'strokes')]
+        reference,strokes=load_catalog_reference(entry)
         glyph = Image.fromarray(np.uint8((1-reference[0])*255)).convert('RGB')
         x, y = (index % side)*pixels, (index//side)*pixels
         bbox = [x, y, x+pixels, y+pixels]

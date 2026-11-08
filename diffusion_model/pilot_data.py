@@ -16,12 +16,14 @@ def _usable_manifest(path):
         return False
     rows = _read_json(path)
     return (isinstance(rows, list) and bool(rows) and any(r.get('split') == 'train' for r in rows)
-            and all((path.parent / row['path']).is_file() for row in rows))
+            and all(((path.parent / row['path']).is_file() if row.get('path') else
+                     Path(row['reference']).is_file() and all(Path(p).is_file() for p in row['reference_strokes']))
+                    for row in rows))
 
 
 def prepare_pilot_data(checkpoint, data_root=None, *, csv_path=None,
-                       local_root='/content/hsqm_stroke_zip', manifest=None):
-    """Reuse live local data, otherwise rerun the SAME archive/CSV preparation.
+                       local_root='/content/hsqm_stroke_zip', manifest=None, reference_only=True):
+    """Default to reference-only preparation; retain full conversion as opt-in.
 
     Reads the CSV snapshot, seed, resolution and supervision saved beside best.pt.
     Does not train a model or modify checkpoint files. No whole-Drive search.
@@ -32,6 +34,10 @@ def prepare_pilot_data(checkpoint, data_root=None, *, csv_path=None,
     recorded = config.get('manifest')
     candidates = [Path(manifest)] if manifest is not None else ([Path(recorded)] if recorded else [])
     for candidate in candidates:
+        if reference_only and manifest is None and candidate.is_file():
+            recorded_rows=_read_json(candidate)
+            if recorded_rows and recorded_rows[0].get('format')!='reference_paths_v1':
+                continue
         if _usable_manifest(candidate):
             print('현재 세션의 학습 데이터 재사용:', candidate, flush=True)
             return dict(manifest=str(candidate.resolve()), mode='reuse_live_training_data',
@@ -70,6 +76,16 @@ def prepare_pilot_data(checkpoint, data_root=None, *, csv_path=None,
         if len(archive_paths) == 1:
             data_root = data_root.parent
     source = existing_path(data_root)
+    if reference_only:
+        from stroke_model.reference_only_data import prepare_reference_catalog
+        catalog=prepare_reference_catalog(source,selected_csv,conversion,int(config['image_size']),
+                                          int(config['seed']),local_root)
+        return dict(manifest=str(catalog.resolve()),mode='reference_only_no_training_npz',
+            checkpoint=str(checkpoint.resolve()),data_root=str(source.resolve()),
+            csv_snapshot=str(selected_csv.resolve()),
+            csv_sha256=hashlib.sha256(selected_csv.read_bytes()).hexdigest(),
+            image_size=int(config['image_size']),seed=int(config['seed']),
+            supervision=supervision,original_image_content_fingerprint_available=False)
     print('기존 임시 manifest 없음 → 학습 ZIP/TAR·CSV로 자동 재생성', flush=True)
     print('학습 압축 자료:', source, flush=True)
     print('원래 학습 CSV:', selected_csv, flush=True)

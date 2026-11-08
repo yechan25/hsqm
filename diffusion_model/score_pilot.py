@@ -13,6 +13,26 @@ import numpy as np
 from PIL import Image
 
 
+def load_catalog_reference(entry):
+    """Read one selected glyph, from either a training NPZ or reference PNGs."""
+    if entry.get('path'):
+        with np.load(entry['path'],allow_pickle=False) as data:
+            reference,strokes=[data[key].astype(np.float32) for key in ('reference','strokes')]
+    else:
+        from stroke_model.convert_reference_csv import load_ink
+        reference=load_ink(entry['reference'],entry['image_size'])
+        strokes=np.concatenate([load_ink(p,entry['image_size']) for p in entry['reference_strokes']])
+    if (reference.ndim!=3 or reference.shape[0]!=1 or reference.shape[1]!=reference.shape[2]
+            or strokes.ndim!=3 or strokes.shape[1:]!=reference.shape[1:] or not len(strokes)):
+        raise ValueError('Invalid reference/stroke shapes')
+    for array in (reference,strokes):
+        if not np.isfinite(array).all() or array.min()<0 or array.max()>1:
+            raise ValueError('Expected finite absolute ink in [0,1]')
+    if reference.max()<=.5 or (strokes.max(axis=(1,2))<=.5).any():
+        raise ValueError('Empty reference or stroke')
+    return reference,strokes
+
+
 def training_catalog(manifest):
     """Only explicit train rows; never infer characters from numeric image IDs."""
     manifest = Path(manifest).resolve()
@@ -30,6 +50,12 @@ def training_catalog(manifest):
             if previous != split:
                 raise ValueError('Training manifest contains group leakage')
         if split != 'train':
+            continue
+        if row.get('format') == 'reference_paths_v1':
+            digest=row['reference_sha256']
+            if digest in seen:continue
+            seen.add(digest)
+            catalog.append({**row,'manifest_row':index+1})
             continue
         path = (manifest.parent / row['path']).resolve()
         with np.load(path, allow_pickle=False) as data:
@@ -129,8 +155,7 @@ def generate_pilot(manifest, manifest_rows, output, *, strengths=(.25, .45, .65)
 
     for row in selected:
         entry = catalog[row]
-        with np.load(entry['path'], allow_pickle=False) as data:
-            reference, strokes = [data[k].astype(np.float32) for k in ('reference', 'strokes')]
+        reference,strokes=load_catalog_reference(entry)
         initial = Image.fromarray(np.uint8((1-reference[0])*255)).convert('RGB')
         save(initial, entry, reference, strokes, 'reference_control', control=True)
         initial = initial.resize((512, 512), Image.Resampling.BICUBIC)

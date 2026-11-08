@@ -3,6 +3,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 import numpy as np
@@ -10,7 +12,8 @@ import pandas as pd
 from PIL import Image
 
 from diffusion_model.pilot_data import prepare_pilot_data
-from diffusion_model.score_pilot import training_catalog
+from diffusion_model.score_pilot import training_catalog, load_catalog_reference, generate_pilot
+from diffusion_model.multiglyph_pilot import generate_multiglyph_pilot
 from stroke_model.prepare_stroke_zips import ARCHIVES, prepare_stroke_zips
 
 
@@ -59,7 +62,7 @@ class PilotDataTests(unittest.TestCase):
 
     def test_rebuilds_missing_manifest_with_original_split_and_geometry(self):
         before = self.checkpoint.read_bytes()
-        result = prepare_pilot_data(self.checkpoint, self.source, local_root=self.root/'new_cache')
+        result = prepare_pilot_data(self.checkpoint, self.source, local_root=self.root/'new_cache',reference_only=False)
         self.assertEqual(result['mode'], 'rebuilt_from_training_archives')
         manifest = Path(result['manifest'])
         old, new = [json.loads(p.read_text()) for p in (self.old_manifest, manifest)]
@@ -70,13 +73,46 @@ class PilotDataTests(unittest.TestCase):
                 for key in ('reference', 'strokes'):
                     np.testing.assert_array_equal(a[key], b[key])
         self.assertTrue(training_catalog(manifest))
-        again = prepare_pilot_data(self.checkpoint, self.source, local_root=self.root/'new_cache')
+        again = prepare_pilot_data(self.checkpoint, self.source, local_root=self.root/'new_cache',reference_only=False)
         self.assertEqual(again['manifest'], result['manifest'])
         self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_live_manifest_reuses_data_without_original_archives(self):
         result = prepare_pilot_data(self.checkpoint, self.root/'missing_source', manifest=self.old_manifest)
         self.assertEqual(result['mode'], 'reuse_live_training_data')
+
+    def test_reference_only_preserves_training_split_without_training_npz(self):
+        with patch('stroke_model.prepare_stroke_zips.convert_csv',side_effect=AssertionError('No full conversion')):
+            result=prepare_pilot_data(self.checkpoint,self.source,local_root=self.root/'fast_cache')
+        self.assertEqual(result['mode'],'reference_only_no_training_npz')
+        records=json.loads(Path(result['manifest']).read_text(encoding='utf-8'))
+        original=json.loads(self.old_manifest.read_text(encoding='utf-8'))
+        self.assertEqual({(r['group_id'],r['split']) for r in records},
+                         {(r['group_id'],r['split']) for r in original})
+        self.assertFalse(list((self.root/'fast_cache').rglob('*.npz')))
+        self.assertFalse(any(p.parent.name in ('input','input_stroke') for p in
+                            (self.root/'fast_cache').rglob('*.png')))
+        for entry in training_catalog(result['manifest']):
+            reference,strokes=load_catalog_reference(entry)
+            old=next(r for r in original if r['group_id']==entry['group_id'])
+            with np.load(old['path']) as data:
+                np.testing.assert_array_equal(reference,data['reference'])
+                np.testing.assert_array_equal(strokes,data['strokes'])
+        with patch('stroke_model.reference_only_data.load_ink',side_effect=AssertionError('Use cache')):
+            cached=prepare_pilot_data(self.checkpoint,self.source,local_root=self.root/'fast_cache')
+        self.assertEqual(cached['manifest'],result['manifest'])
+        class IdentityPipeline:
+            scheduler=SimpleNamespace(config={})
+            config={}
+            def __call__(self,**kwargs):
+                return SimpleNamespace(images=[kwargs['image'].copy()],nsfw_content_detected=[False])
+        selected=[entry['manifest_row'] for entry in training_catalog(result['manifest'])]
+        single=generate_pilot(result['manifest'],selected[:1],self.root/'single',
+                             strengths=[.5],seeds=[3],pipeline=IdentityPipeline())
+        multi=generate_multiglyph_pilot(result['manifest'],selected,self.root/'multi',
+            glyph_counts=[4],canvas_size=64,strengths=[.5],seeds=[3],pipeline=IdentityPipeline())
+        self.assertEqual(len(single['results']),2)
+        self.assertEqual(len(multi['results']),8)
 
     def test_changed_csv_is_rejected_before_rebuild(self):
         changed = self.root/'changed.csv'

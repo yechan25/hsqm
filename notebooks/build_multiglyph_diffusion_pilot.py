@@ -60,8 +60,8 @@ def update_preview(change=None):
     sheet = Image.new('RGB', (160*side, 180*side), 'white')
     draw = ImageDraw.Draw(sheet)
     for index, row in enumerate(selected):
-        with np.load(by_row[row]['path'], allow_pickle=False) as data:
-            glyph = Image.fromarray(np.uint8((1-data['reference'][0])*255)).convert('RGB')
+        reference,_ = load_catalog_reference(by_row[row])
+        glyph = Image.fromarray(np.uint8((1-reference[0])*255)).convert('RGB')
         x, y = (index%side)*160, (index//side)*180
         sheet.paste(glyph.resize((160,160)), (x,y))
         draw.text((x+4,y+160), f'slot {index+1} | row {row}', fill='black')

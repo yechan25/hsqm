@@ -62,7 +62,7 @@ output.enable_custom_widget_manager()
 ''')
     cell('code', '''
 from stroke_model.convert_reference_csv import existing_path
-from diffusion_model.score_pilot import training_catalog, generate_pilot, score_pilot
+from diffusion_model.score_pilot import training_catalog, generate_pilot, score_pilot, load_catalog_reference
 from diffusion_model.pilot_data import prepare_pilot_data
 from IPython.display import display
 import ipywidgets as widgets
@@ -71,6 +71,7 @@ CHECKPOINT = None  # 폰트 실험에서 사용한 best.pt의 전체 경로를 �
 DATA_ROOT = HSQM/'dataset/automated_train_dataset'  # 기존 학습 ZIP/TAR가 있는 폴더
 CSV_PATH = None  # None: 체크포인트 옆에 저장된 학습 CSV를 자동 사용
 TRAIN_MANIFEST = None  # 기존 세션의 유효한 목록이 있을 때만 선택적으로 지정. 없어도 자동 재생성
+REFERENCE_ONLY = True  # 시험에는 기준 글자/기준 획만 사용. 전체 학습 NPZ 변환 생략
 SCORE_CONFIG = {}  # 폰트 시험에서 값을 바꿨다면 동일한 설정 입력
 SOURCE_CONFIG = {}
 STRENGTHS = [.25, .45, .65]
@@ -84,7 +85,8 @@ if CHECKPOINT is None:
     CHECKPOINT = candidates[-1]
 CHECKPOINT = existing_path(CHECKPOINT)
 print('사용할 획 모델:', CHECKPOINT, flush=True)
-preparation = prepare_pilot_data(CHECKPOINT, DATA_ROOT, csv_path=CSV_PATH, manifest=TRAIN_MANIFEST)
+preparation = prepare_pilot_data(CHECKPOINT, DATA_ROOT, csv_path=CSV_PATH, manifest=TRAIN_MANIFEST,
+    reference_only=REFERENCE_ONLY)
 TRAIN_MANIFEST = Path(preparation['manifest'])
 print('데이터 준비 완료. 3번 셀에서 기준 글자를 선택하세요.', flush=True)
 ''')
@@ -99,8 +101,8 @@ reference_select = widgets.Dropdown(
     description='기준 글자:', layout=widgets.Layout(width='98%'))
 preview = widgets.Image(format='png', width=200, height=200)
 def update_preview(change=None):
-    with np.load(by_row[reference_select.value]['path'], allow_pickle=False) as data:
-        ink = data['reference'][0]
+    reference,_ = load_catalog_reference(by_row[reference_select.value])
+    ink = reference[0]
     buffer = io.BytesIO()
     Image.fromarray(np.uint8((1-ink)*255)).save(buffer, format='PNG')
     preview.value = buffer.getvalue()
