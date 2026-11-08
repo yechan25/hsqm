@@ -32,8 +32,13 @@ class GuidanceConfig:
     local_final_iterations: int=0
     local_erase_l1_weight: float=0.
     local_erase_tail_weight: float=0.
+    max_state_change_to_base_step_ratio: float | None=None
 
     def __post_init__(self):
+        if (self.max_state_change_to_base_step_ratio is not None and
+                (not math.isfinite(self.max_state_change_to_base_step_ratio) or
+                 self.max_state_change_to_base_step_ratio<=0 or self.state_update!='clean_residual' or self.local_edit)):
+            raise ValueError('State change cap requires nonlocal clean_residual guidance and a positive ratio')
         if (not math.isfinite(self.local_erase_tail_weight) or self.local_erase_tail_weight<0
                 or not math.isfinite(self.local_erase_l1_weight) or self.local_erase_l1_weight<0
                 or type(self.local_halo_radius) is not int or self.local_halo_radius<0
@@ -193,6 +198,10 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                             prev_t=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
                             prev_alpha=(scheduler.alphas_cumprod[prev_t] if prev_t>=0
                                         else scheduler.final_alpha_cumprod).to(latent.device).float()
+                            if config.max_state_change_to_base_step_ratio is not None:
+                                cap=config.max_state_change_to_base_step_ratio*record['base_transition_rms']
+                                rms=prev_alpha.sqrt()*delta.square().mean().sqrt()
+                                delta=delta*(cap/rms.clamp_min(1e-12)).clamp(max=1.)
                             candidate=type(original)(
                                 prev_sample=original.prev_sample-prev_alpha.sqrt()*delta,
                                 pred_original_sample=original.pred_original_sample-delta)

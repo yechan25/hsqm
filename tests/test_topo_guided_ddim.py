@@ -131,6 +131,16 @@ class GuidedDDIMTests(unittest.TestCase):
         for row in trace:
             if row['accepted']:self.assertLess(row['loss_after'],row['loss_before'])
 
+    def test_repair_state_update_is_capped_against_natural_transition(self):
+        cfg=GuidanceConfig(clean_step_ratio=.5,state_update='clean_residual',
+            start_fraction=0,end_fraction=1,every=1,max_state_change_to_base_step_ratio=.25)
+        _,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=self.objective,config=cfg)
+        self.assertTrue(any(r['accepted'] for r in trace))
+        for row in trace:
+            for attempt in row.get('attempts',[]):
+                self.assertLessEqual(attempt['state_delta_rms'],.25*row['base_transition_rms']+1e-6)
+
     def test_zero_guidance_is_bit_identical_to_the_real_ddim_loop(self):
         expected=self.initial.clone()
         with torch.no_grad():
@@ -384,9 +394,27 @@ class GuidedDDIMTests(unittest.TestCase):
                     self.assertEqual(external['strength'],.35)
                     self.assertEqual(external['effective_steps'],2)
                     self.assertTrue((root/'external/external_input.png').exists())
+                    from diffusion_model.two_stage_repair import generate_first_stage,repair_generated_image
+                    first=generate_first_stage(manifest,[1,2,3,4],checkpoint,root/'first',
+                        steps=8,canvas_size=48,init_mode='external',
+                        input_sheet=root/'run/page_001_baseline.png',strength=.65)
+                    self.assertEqual({p['method'] for p in first['pages']},{'reference','baseline'})
+                    self.assertEqual(first['baseline_accepted_steps'],0)
+                    repaired=repair_generated_image(manifest,[1,2,3,4],checkpoint,
+                        first['generated_image'],root/'repair',steps=8,strength=.5,canvas_size=48)
+                    self.assertEqual(repaired['preservation_weight'],1.)
+                    self.assertFalse(repaired['clean_target_pixels_used'])
+                    self.assertEqual(repaired['phase'],'second_pass_repair')
+                    self.assertEqual(repaired['external_input'],first['generated_image'])
+                    self.assertEqual(repaired['effective_steps'],4)
+                    self.assertEqual(repaired['seed'],101)
+                    self.assertEqual(repaired['guidance_config']['max_state_change_to_base_step_ratio'],.25)
+                    self.assertEqual(len({p['initial_latent_sha256'] for p in repaired['pages']}),1)
+                    self.assertIn('preservation_loss',repaired['structure_audit']['guided'])
+
 
             self.assertEqual(report['status'],'complete')
-            self.assertEqual(pipe.encoder_calls,2)
+            self.assertEqual(pipe.encoder_calls,4)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
             self.assertEqual(len({p['initial_latent_sha256'] for p in report['pages']}),1)
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')

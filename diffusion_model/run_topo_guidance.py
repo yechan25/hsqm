@@ -35,9 +35,12 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
         appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False,
-        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65):
+        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65,baseline_only=False,preservation_weight=0.):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     if not np.isfinite(strength) or not 0<strength<=1:raise ValueError('strength must be in (0,1]')
+    if not np.isfinite(preservation_weight) or preservation_weight<0:raise ValueError('Invalid preservation weight')
+    if preservation_weight and (guidance_signal!='template_structure' or init_mode!='external'):
+        raise ValueError('Preservation requires template structure guidance from an external generated image')
     if type(seed) is not int or seed<0:raise ValueError('Nonnegative integer seed required')
     if guidance_signal not in ('pixel_control','template_structure'):raise ValueError('Unknown guidance signal')
     if init_mode not in ('reference','external','noise'):raise ValueError('Unknown initialization mode')
@@ -48,6 +51,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     if len(selected)!=4 or len(set(selected))!=4 or any(row not in catalog for row in selected):
         raise ValueError('Select exactly four distinct training-reference rows')
     if type(steps) is not int or steps<4:raise ValueError('Need at least four nominal steps')
+    if init_mode!='noise' and int(steps*strength)<2:raise ValueError('Need at least two actual img2img timesteps')
     config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
             GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,
                            state_update='clean_residual',max_new_local_ink=.002))
@@ -113,6 +117,10 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         from stroke_model.source_ink_guard import SourceInkGuard
         guiding_objective=TemplateStructureGuidance(model,slots).to(device).eval()
         source_guard=SourceInkGuard(reference_rgb).to(device)
+        if preservation_weight:
+            from stroke_model.template_structure_guidance import PreserveGeneratedImage
+            anchor=torch.from_numpy(np.asarray(starting_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
+            guiding_objective=PreserveGeneratedImage(guiding_objective,anchor,preservation_weight).to(device)
     else:
         objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
             appearance_weight=appearance_weight,appearance_config=appearance,mask_gradient=mask_gradient,
@@ -127,7 +135,8 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     if init_mode=='external':starting_image.save(destination/'external_input.png')
     checkpoint_hash=_file_hash(checkpoint)
     initial_hash=tensor_hash(initial)
-    report=dict(guidance_signal=guidance_signal,init_mode=init_mode,
+    report=dict(guidance_signal=guidance_signal,init_mode=init_mode,baseline_only=bool(baseline_only),
+        preservation_weight=preservation_weight,preservation_anchor="external_generated_input" if preservation_weight else None,
         reference_encoded_as_input=init_mode=='reference',
         external_input=str(input_sheet) if input_sheet else None,
         pixel_audit_is_auxiliary=guidance_signal=='template_structure',
@@ -180,7 +189,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
             if guidance_signal=='template_structure':
                 value,detail=guiding_objective(rgb)
                 report.setdefault('structure_audit',{})[method]=dict(loss=float(value),
-                    per_glyph=[float(r['descriptor_loss']) for r in detail['per_glyph']])
+                    per_glyph=[float(r['descriptor_loss']) for r in detail['per_glyph']],
+                    structure_loss=float(detail.get('structure_loss',value)),
+                    preservation_loss=float(detail.get('preservation_loss',0.)))
         source_map=source['local_excess'].detach().cpu()
         audit=dict(source_spill_loss=float(source['loss']))
         if method=='baseline':baseline_source_map=source_map
@@ -233,9 +244,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         save_page(initial_image,'reference')
         # Both receive copies of the same VAE-sampled, noised sheet; no re-seeding shortcut.
         methods=[('baseline',GuidanceConfig(noise_ratio=0))]
-        if compare_uniform:methods.append(('uniform_guided',config))
-        if compare_structure and appearance_weight>0:methods.append(('structure_guided',config))
-        methods.append(('guided',config))
+        if compare_uniform and not baseline_only:methods.append(('uniform_guided',config))
+        if compare_structure and appearance_weight>0 and not baseline_only:methods.append(('structure_guided',config))
+        if not baseline_only:methods.append(('guided',config))
         for method,cfg in methods:
             if objective is not None:
                 objective.focus_strength=0. if method=='uniform_guided' else focus['focus_strength']

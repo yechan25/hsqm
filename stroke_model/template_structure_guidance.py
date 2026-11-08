@@ -2,6 +2,7 @@
 
 Experimental moments/relative-attachment proxy, not a complete topology metric.
 """
+import math
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -68,3 +69,19 @@ class TemplateStructureGuidance(nn.Module):
             rows.append(dict(slot=i,descriptor_loss=error,per_stroke=[]))
         bound=(F.relu(-rgb).square()+F.relu(rgb-1).square()).mean()
         return torch.stack(losses).mean()+.01*bound,dict(per_glyph=rows)
+
+
+class PreserveGeneratedImage(nn.Module):
+    """Penalize change from the FIRST generated image, never a clean target."""
+    def __init__(self,structure_objective,generated_rgb,weight=1.):
+        super().__init__()
+        if not math.isfinite(weight) or weight<0:raise ValueError('Invalid preservation weight')
+        self.structure_objective=structure_objective;self.weight=weight
+        self.register_buffer('generated_rgb',generated_rgb.detach().clone())
+
+    def forward(self,rgb):
+        if rgb.shape!=self.generated_rgb.shape:raise ValueError('Generated image anchor shape changed')
+        structure,details=self.structure_objective(rgb)
+        preservation=(rgb-self.generated_rgb).square().mean()
+        details=dict(details,structure_loss=structure,preservation_loss=preservation)
+        return structure+self.weight*preservation,details
