@@ -19,7 +19,7 @@ def build():
     cell('markdown', '''# 확산 생성 이미지 → 기존 Topo 추출·원본 점수
 
 새 DDPM을 학습하지 않고 사전학습 Stable Diffusion 1.5 + DDIM으로 시험합니다.
-획 모델 학습 manifest의 **train 행에 있는 기준 글자만** 선택합니다.
+기존 학습 ZIP/TAR·CSV에서 학습 목록을 자동으로 다시 만들고, **train 행의 기준 글자만** 선택합니다.
 그 글자에서 출발하는 img2img 실험으로, 텍스트만으로 같은 글자를 생성하는 성능 시험은 아닙니다.
 strength 0.25/0.45/0.65, seed 100/101: 글자당 생성물 6장과 기준 대조군 1장.
 모든 생성물을 보존합니다. 다른 글자가 됐거나 빈 이미지가 나와도 제외하지 않습니다.
@@ -29,7 +29,7 @@ strength 0.25/0.45/0.65, seed 100/101: 글자당 생성물 6장과 기준 대조
 실제 GPU 생성과 사용자 체크포인트 평가 결과는 이 노트북 실행 후에 얻습니다.
 로컬 연결 검사는 실제 확산 생성 품질 검증이 아닙니다.
 
-1. 준비·Drive 연결 → 2. 기존 체크포인트와 학습 manifest 선택
+1. 준비·Drive 연결 → 2. 기존 체크포인트·학습 압축 자료에서 데이터 자동 준비
 3. 학습 기준 글자 선택 → 4. 생성 → 5. 기존 추출·점수·진단 ZIP
 
 점수는 폰트 실험과 같은 원본 잉크 기반 점수입니다. Topo 마스크는 함께 표시하지만 수치 점수에 사용하지 않습니다.
@@ -63,11 +63,14 @@ output.enable_custom_widget_manager()
     cell('code', '''
 from stroke_model.convert_reference_csv import existing_path
 from diffusion_model.score_pilot import training_catalog, generate_pilot, score_pilot
+from diffusion_model.pilot_data import prepare_pilot_data
 from IPython.display import display
 import ipywidgets as widgets
 HSQM = existing_path('/content/drive/Shareddrives/2026 자율연구/HSQM')
 CHECKPOINT = None  # 폰트 실험에서 사용한 best.pt의 전체 경로를 넣으면 그 모델 사용
-TRAIN_MANIFEST = None  # 이 획 모델 학습에 실제 사용한 manifest.json (test CSV 아님)
+DATA_ROOT = HSQM/'dataset/automated_train_dataset'  # 기존 학습 ZIP/TAR가 있는 폴더
+CSV_PATH = None  # None: 체크포인트 옆에 저장된 학습 CSV를 자동 사용
+TRAIN_MANIFEST = None  # 기존 세션의 유효한 목록이 있을 때만 선택적으로 지정. 없어도 자동 재생성
 SCORE_CONFIG = {}  # 폰트 시험에서 값을 바꿨다면 동일한 설정 입력
 SOURCE_CONFIG = {}
 STRENGTHS = [.25, .45, .65]
@@ -80,30 +83,15 @@ if CHECKPOINT is None:
         raise FileNotFoundError('CHECKPOINT에 기존 Topo best.pt를 지정하세요.')
     CHECKPOINT = candidates[-1]
 CHECKPOINT = existing_path(CHECKPOINT)
-print('사용할 획 모델:', CHECKPOINT)
-run_config = CHECKPOINT.parent/'run_config.json'
-if run_config.is_file():
-    config = json.loads(run_config.read_text())
-    print('학습 기록의 manifest:', config.get('manifest'))
-    candidate = Path(config.get('manifest') or '__not_found__')
-    if TRAIN_MANIFEST is None and candidate.is_file():
-        TRAIN_MANIFEST = candidate
-if TRAIN_MANIFEST is None:
-    manifest_candidates = sorted(HSQM.rglob('manifest.json'))
-else:
-    manifest_candidates = [existing_path(TRAIN_MANIFEST)]
-if not manifest_candidates:
-    raise FileNotFoundError('TRAIN_MANIFEST에 기존 획 모델 학습 manifest 경로를 지정하세요.')
-manifest_select = widgets.Dropdown(options=[(str(p), str(p)) for p in manifest_candidates],
-    description='학습 목록:', layout=widgets.Layout(width='98%'))
-display(manifest_select)
-print('선택한 체크포인트를 학습할 때 쓴 manifest인지 확인하세요. 체크포인트 자체에는 학습 글자 목록이 없습니다.')
+print('사용할 획 모델:', CHECKPOINT, flush=True)
+preparation = prepare_pilot_data(CHECKPOINT, DATA_ROOT, csv_path=CSV_PATH, manifest=TRAIN_MANIFEST)
+TRAIN_MANIFEST = Path(preparation['manifest'])
+print('데이터 준비 완료. 3번 셀에서 기준 글자를 선택하세요.', flush=True)
 ''')
     cell('code', '''
 import io
 import numpy as np
 from PIL import Image
-TRAIN_MANIFEST = Path(manifest_select.value)
 catalog = training_catalog(TRAIN_MANIFEST)
 by_row = {item['manifest_row']: item for item in catalog}
 reference_select = widgets.Dropdown(
@@ -129,6 +117,8 @@ MODEL_REVISION = model_info(MODEL_ID).sha
 OUTPUT_DIR = HSQM/'diffusion_score_pilots'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
 generation = generate_pilot(TRAIN_MANIFEST, [int(reference_select.value)], OUTPUT_DIR,
     strengths=STRENGTHS, seeds=SEEDS, steps=STEPS, model_id=MODEL_ID, revision=MODEL_REVISION)
+generation['data_preparation'] = preparation
+(OUTPUT_DIR/'generation_report.json').write_text(json.dumps(generation, ensure_ascii=False, indent=2), encoding='utf-8')
 (OUTPUT_DIR/'git_commit.txt').write_text(commit, encoding='utf-8')
 print('생성 원본과 점수 입력:', OUTPUT_DIR)
 # 함수 밖에 생성 파이프라인을 보관하지 않습니다. 다음 셀에서 GPU 메모리를 회수합니다.
