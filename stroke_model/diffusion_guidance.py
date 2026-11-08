@@ -10,11 +10,13 @@ from .stroke_structure import StrokeStructureLoss, StructureConfig
 from .structural_indicator import StructuralIndicator, IndicatorConfig
 from .source_quality_v5 import foreground_evidence
 from .stroke_appearance import StrokeAppearanceLoss,AppearanceConfig
+from .source_ink_guard import SourceInkGuard
 
 
 class TopoGuidance(nn.Module):
     def __init__(self, model, slots, structure_config=None, extra_weight=.05, range_weight=.01,
-                 focus_strength=0., max_stroke_weight=3.,appearance_weight=0.,appearance_config=None):
+                 focus_strength=0., max_stroke_weight=3.,appearance_weight=0.,appearance_config=None,
+                 mask_gradient='full',source_spill_weight=0.):
         super().__init__()
         if len(slots)!=4:raise ValueError('This experiment requires exactly four glyph slots')
         self.model=model.eval().requires_grad_(False)
@@ -24,6 +26,12 @@ class TopoGuidance(nn.Module):
         self.appearance_metrics=nn.ModuleList()
         self.appearance_config=appearance_config or AppearanceConfig()
         self.appearance_weight=float(appearance_weight)
+        if mask_gradient not in ('full','ink_only'):raise ValueError('Unknown Topo gradient mode')
+        self.mask_gradient=mask_gradient
+        self.source_spill_weight=float(source_spill_weight)
+        if not math.isfinite(self.source_spill_weight) or self.source_spill_weight<0:
+            raise ValueError('Source spill weight must be finite and nonnegative')
+        self.source_guard=None
         if not math.isfinite(self.appearance_weight) or self.appearance_weight<0:
             raise ValueError('Appearance weight must be finite and nonnegative')
         self.extra_weight=float(extra_weight)
@@ -75,6 +83,7 @@ class TopoGuidance(nn.Module):
         This is not a subtraction of a scalar bias: the entire target soft mask
         is measured once, frozen, and shared by all trajectories/candidates.
         """
+        self.set_reference_sheet(reference_rgb)
         luminance=self._luminance(reference_rgb)
         summary=[]
         for i in range(len(self.slots)):
@@ -88,6 +97,9 @@ class TopoGuidance(nn.Module):
                                 calibrated_reference_error=float(metric(target[None])['loss'].mean())))
         return summary
 
+    def set_reference_sheet(self,reference_rgb):
+        self.source_guard=SourceInkGuard(reference_rgb).to(reference_rgb.device)
+
     def forward(self, rgb, return_masks=False, stroke_weights=None):
         if rgb.ndim!=4 or rgb.shape[0]!=1 or rgb.shape[1]!=3:
             raise ValueError('Expected one jointly generated RGB sheet: 1,3,H,W')
@@ -100,8 +112,14 @@ class TopoGuidance(nn.Module):
             ref=getattr(self,f'reference_{i}')
             strokes=getattr(self,f'strokes_{i}')
             ink=self._crop_ink(luminance,i)
-            prediction=self.model(ink.float(),ref,strokes)
-            measured=metric(prediction['masks'].float(),return_maps=return_masks)
+            with torch.set_grad_enabled(torch.is_grad_enabled() and self.mask_gradient=='full'):
+                prediction=self.model(ink.float(),ref,strokes)
+            masks=prediction['masks'].float()
+            if self.mask_gradient=='ink_only':
+                # Preserve the measured masks EXACTLY in forward, but do not
+                # optimize RGB to change the extractor's channel classification.
+                masks=masks.detach()+(ink-ink.detach())*prediction['probabilities'].detach()
+            measured=metric(masks,return_maps=return_masks)
             if not all(c['pairs'] and c['attachment'] for c in measured['convergence']):
                 raise RuntimeError('Stroke reconstruction did not converge; do not guide on truncated measurements')
             values=measured['per_stroke']
@@ -109,7 +127,7 @@ class TopoGuidance(nn.Module):
             cfg=self.structure_config
             structure_loss=(cfg.missing_weight*values['missing']+cfg.split_weight*torch.log1p(values['split']/.2)
                       +cfg.junction_weight*torch.log1p(values['junction']/.01)+cfg.width_weight*values['width'])
-            appearance=self.appearance_metrics[i](prediction['masks'].float(),return_maps=return_masks)
+            appearance=self.appearance_metrics[i](masks,return_maps=return_masks)
             per_loss=structure_loss+self.appearance_weight*appearance['loss']
             scoring=self.scorer(values['missing'],values['split'],values['junction'],extra=0.)
             scores=scoring['stroke_scores']
@@ -148,4 +166,8 @@ class TopoGuidance(nn.Module):
                 row['appearance_maps']={name:appearance[name] for name in ('contour_map','local_mass_map')}
             rows.append(row)
         loss=torch.stack(losses).mean()+self.range_weight*range_loss
-        return loss,dict(per_glyph=rows,range_loss=range_loss)
+        spill=self.source_guard(rgb) if self.source_guard is not None else None
+        if spill is not None:loss=loss+self.source_spill_weight*spill['loss']
+        return loss,dict(per_glyph=rows,range_loss=range_loss,
+                         source_spill_loss=spill['loss'] if spill is not None else None,
+                         source_spill_map=spill['local_excess'].detach() if spill is not None else None)

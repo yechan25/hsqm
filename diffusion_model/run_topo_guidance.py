@@ -34,7 +34,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         'stable-diffusion-v1-5/stable-diffusion-v1-5',revision=None,steps=30,canvas_size=576,
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
-        appearance_target='extractor_reference'):
+        appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     selected=list(manifest_rows)
     catalog={row['manifest_row']:row for row in training_catalog(manifest)}
@@ -42,7 +42,8 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         raise ValueError('Select exactly four distinct training-reference rows')
     if type(steps) is not int or steps<4:raise ValueError('Need at least four nominal steps')
     config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
-            GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,state_update='clean_residual'))
+            GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,
+                           state_update='clean_residual',max_new_local_ink=.002))
     if appearance_target not in ('extractor_reference','partition_reference'):
         raise ValueError('Unknown appearance target mode')
     structure=StructureConfig(**structure_config) if isinstance(structure_config,dict) else structure_config or StructureConfig()
@@ -80,12 +81,14 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     # for stable VAE/Topo input gradients; compare these paired runs, not old PNGs.
     pipe.vae.to(dtype=torch.float32)
     objective=TopoGuidance(model,slots,structure,extra_weight=extra_weight,**focus,
-        appearance_weight=appearance_weight,appearance_config=appearance).to(device).eval()
+        appearance_weight=appearance_weight,appearance_config=appearance,mask_gradient=mask_gradient,
+        source_spill_weight=source_spill_weight).to(device).eval()
     calibration=[]
+    reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
     if appearance_target=='extractor_reference':
-        reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
         calibration=objective.calibrate_appearance(reference_rgb)
-        del reference_rgb
+    else:objective.set_reference_sheet(reference_rgb)
+    del reference_rgb
     destination.mkdir(parents=True,exist_ok=False)
     checkpoint_hash=_file_hash(checkpoint)
     initial_hash=tensor_hash(initial)
@@ -98,9 +101,14 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         stroke_focus=focus,compare_uniform=bool(compare_uniform),
         appearance_weight=appearance_weight,appearance_config=asdict(appearance),compare_structure=bool(compare_structure),
         appearance_target=appearance_target,reference_calibration=calibration,
+        mask_gradient=mask_gradient,source_spill_weight=source_spill_weight,
+        source_ink_guard=dict(support_radius=1,patch_radius=2),
         primary_signal='frozen Topo soft-mask missing/split/junction',
         primary_score='StructuralIndicator on extracted masks with extra_weight=0',
-        gradient_path='clean latent -> fp32 VAE -> four torch crops -> frozen Topo -> stroke loss',
+        gradient_path=('clean latent -> fp32 VAE -> ink with detached Topo ownership -> stroke loss'
+                       if mask_gradient=='ink_only' else
+                       'clean latent -> fp32 VAE -> four torch crops -> frozen Topo -> stroke loss'),
+        ownership_backward=mask_gradient=='full',
         unet_backward=False,weights_updated=False,denoise_eta=0.,cfg_scale=7.5,
         vae_decode_dtype='float32',ddim_state_dtype='float32',
         unet_dtype=str(next(pipe.unet.parameters()).dtype).replace('torch.',''),
@@ -110,13 +118,26 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     def write_report():
         (destination/'generation_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
+    baseline_source_map=None
     def save_page(image,method,filtered=None):
+        nonlocal baseline_source_map
         page_id=len(report['pages']);path=destination/f'page_{page_id:03d}_{method}.png';image.save(path)
         label=f'{method} | 4 glyphs | strength=.65 seed=100'
         page=dict(page_id=page_id,method=method,label=label,input=str(path),glyph_count=4,
                   control=method=='reference',guidance_on=method!='baseline' and method!='reference',initial_latent_sha256=initial_hash,
                   appearance_weight=appearance_weight if method=='guided' else 0.)
         report['pages'].append(page)
+        rgb=torch.from_numpy(np.asarray(image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
+        with torch.no_grad():source=objective.source_guard(rgb)
+        source_map=source['local_excess'].detach().cpu()
+        audit=dict(source_spill_loss=float(source['loss']))
+        if method=='baseline':baseline_source_map=source_map
+        elif method!='reference':
+            increase=float((source_map-baseline_source_map).amax().clamp_min(0))
+            audit.update(new_local_ink_vs_baseline=increase,
+                passes_final_ink_check=increase<=(config.max_new_local_ink if config.max_new_local_ink is not None else .002)+1e-6)
+            if method=='guided':report['quality_review_required']=not audit['passes_final_ink_check']
+        report.setdefault('source_ink_audit',{})[method]=audit
         for slot in slots:
             prefix=destination/f'sample_{len(report["results"]):04d}'
             crop=image.crop(tuple(slot['bbox']));crop.save(str(prefix)+'_raw.png')
@@ -195,12 +216,19 @@ def evaluate_topo_pair(report_path,checkpoint,*,show=True):
     model,size,epoch=load_topology(checkpoint,device)
     objective=TopoGuidance(model,slots,StructureConfig(**report['structure_config']),report['extra_weight'],
         **report.get('stroke_focus',{}),appearance_weight=report.get('appearance_weight',0.),
-        appearance_config=AppearanceConfig(**report.get('appearance_config',{}))).to(device).eval()
+        appearance_config=AppearanceConfig(**report.get('appearance_config',{})),
+        mask_gradient=report.get('mask_gradient','full'),source_spill_weight=report.get('source_spill_weight',0.)).to(device).eval()
     if report.get('appearance_target','partition_reference')=='extractor_reference':
         reference_page=next(p for p in report['pages'] if p['method']=='reference')
         with Image.open(reference_page['input']) as image:
             reference_rgb=torch.from_numpy(np.asarray(image.convert('RGB'),np.float32).copy()/255).permute(2,0,1)[None].to(device)
         objective.calibrate_appearance(reference_rgb)
+        del reference_rgb
+    elif 'source_ink_guard' in report:
+        reference_page=next(p for p in report['pages'] if p['method']=='reference')
+        with Image.open(reference_page['input']) as image:
+            reference_rgb=torch.from_numpy(np.asarray(image.convert('RGB'),np.float32).copy()/255).permute(2,0,1)[None].to(device)
+        objective.set_reference_sheet(reference_rgb)
         del reference_rgb
     out=Path(report_path).parent/('topo_evaluation_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
     out.mkdir(exist_ok=False);rows=[];stroke_rows=[];snapshots=[]
@@ -268,6 +296,9 @@ def evaluate_topo_pair(report_path,checkpoint,*,show=True):
             plt.close(fig)
         del loss,details,rgb,values,stroke,s
     frame=pd.DataFrame(rows);frame.to_csv(out/'topo_scores.csv',index=False,encoding='utf-8-sig')
+    if report.get('source_ink_audit'):
+        pd.DataFrame.from_dict(report['source_ink_audit'],orient='index').rename_axis('method').to_csv(
+            out/'source_ink_checks.csv',encoding='utf-8-sig')
     stroke_frame=pd.DataFrame(stroke_rows)
     stroke_frame.to_csv(out/'stroke_scores.csv',index=False,encoding='utf-8-sig')
     paired=stroke_frame.pivot(index=['slot','stroke'],columns='method',values='score')

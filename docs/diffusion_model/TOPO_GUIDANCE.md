@@ -24,6 +24,7 @@ strength=0.65, seed=100, nominal steps=30이다. Diffusers가 strength에 따라
   다음 timestep에서는 새 예상 완성 이미지로 우선순위를 다시 정한다.
 - 구조 전용 비교 경로 `structure_guided`는 아래 윤곽 보조 손실을 끈다.
   보정 예산·일정·전달 방식·채택 기준·초기 잠재값은 guided와 같다.
+  현재는 ink-only 미분과 원본 잉크 검사도 두 보정 경로에 공통 적용한다.
   균등 구조 보정도 필요하면 `compare_uniform=True`로 한 경로 더 생성한다.
 - 주 손실은 원본 직접 측정 점수로 대체하지 않는다. 소량의 원본 주변 잉크 보조항
   `.05*sum(foreground_ink*(1-reference_support))/reference_ink_mass`와 범위 밖 RGB
@@ -83,6 +84,43 @@ report의 평가도 보조 손실 가중치 0으로 처리한다.
 reference-relative appearance 개선과 보편적 미관/글자 품질 개선을 구분하고,
 구조 점수·원본 그림·보조 손실을 함께 비교해야 한다.
 
+## 접합부의 새 점을 막기 위한 미분 경로와 원본 검사
+
+제공된 후속 ZIP에서는 1번 글자의 구조 점수가 53.99에서 75.42로 올랐지만,
+ㅏ 접합부 주변의 원래 배경 픽셀 (x=206,y=113)의 잉크량이 .055에서 .963으로
+늘었다. 기준을 1픽셀 확장한 영역 밖의 잉크를 5x5로 평균했을 때 최대 증가량은
+.3228이었다. 구조 전용 경로도 근처에서 .3047 증가해, 윤곽 보조 항만의 문제로
+볼 수 없다. 이 결과는 개선 실패 사례로 보존한다.
+
+현재 기본 `mask_gradient='ink_only'`는 각 단계의 실제 Topo forward와 soft masks,
+점수를 유지하지만 미분에서는 채널 배정을 고정한다:
+`masks_surrogate = masks.detach() + (ink-ink.detach())*probabilities.detach()`.
+따라서 잉크를 바꿔 Topo의 분류 반응만 유리하게 만드는 미분 경로를 제한한다.
+이는 원래 `Topo(image)` 전체의 정확한 미분이 아니라 **현재 배정을 고정한 잉크량
+surrogate**다. 후보는 다시 실제 Topo로 추출·평가하므로 분류 결과를 가짜로 고정해
+점수를 계산하지 않는다. 매 단계 새 배정을 얻으며 가중치를 학습하지 않는다.
+`mask_gradient='full'`은 이전 전체 미분을 재현한다.
+
+`stroke_model.source_ink_guard.SourceInkGuard`는 이 경로와 별도로 원본 RGB를 검사한다.
+네 글자 전체의 native 해상도에서 정상 reference를 1픽셀 확장한 support 밖의
+foreground 잉크 제곱을 구한다. `.5*sum(excess)/reference_ink_mass`를 보조 손실로
+더하고, `max_new_local_ink=.002`이면 **각 5x5 영역**의 증가를 후보 채택 조건에 넣는다.
+전체 평균 오차가 줄어도 한 영역이 커지면 거부할 수 있다. 단계 사이 최소 오차
+anchor를 유지해 작은 증가를 반복해 점을 키우는 것도 제한한다. 다음 U-Net 예측이
+이미 늘린 영역에서는 보정이 그 잉크를 더 늘리지 못하게 한다.
+
+이 검사는 기준 대비 추가 잉크 검사이며, 임의의 셰리프가 의미상 잘못됐는지 판단하는
+분류기가 아니다. 기준의 1픽셀 여유를 넘어서는 의도적인 스타일 변화도 제한한다.
+임계값은 공학적 시작값이다. `source_spill_weight=0`, `max_new_local_ink=None`이면
+이 보조 항과 채택 제한을 끈다. 추출 획 주 손실/주 점수는 대체하지 않는다.
+
+마지막 저장된 RGB에서도 baseline 대비 최대 국소 잉크 증가를 다시 검사한다.
+이는 중간 clean estimate 검사와 다르며, 이후 U-Net/VAE 영향으로 다시 생긴 점도
+검토하기 위한 것이다. `source_ink_audit`, `quality_review_required`와
+`source_ink_checks.csv`, `new_ink_local_difference.png`에 결과를 남긴다.
+최종 검사에 걸려도 원본 생성물을 유지하며, 점수 상승만으로 개선 성공으로 표시하지
+않는다. 실제 pretrained GPU 실행에서 모든 새 점을 제거한다는 보장은 없다.
+
 ## 잡음 예측 모델과 실제 상태 보정
 
 `diffusion_model.guided_ddim.denoise`는 Diffusers DDIM step의 `pred_original_sample`을 사용한다.
@@ -121,6 +159,7 @@ clean 후보에 대응하는 **등가 epsilon 변화량**이고, 실제 적용�
 
 각 모드의 수정된 clean estimate를 다시 평가한다. 같은 시점의
 전체 손실이 낮아지고 4글자 평균 추출 획 점수가 낮아지지 않으며 실제 다음 상태가 변할 때만 채택한다.
+원본 국소 잉크 증가 검사도 켜져 있으면 함께 통과해야 한다.
 추가로 **보정 전 90점 이상인 각 획**이 1점 넘게 나빠지는 후보는 거부한다.
 `healthy_stroke_score`, `max_healthy_stroke_drop`으로 임계값을 명시한다.
 이는 같은 시점 후보 사이의 보호 조건이며, 최종 결과에서 누적 악화가 없다는 보장은 아니다.
@@ -179,6 +218,8 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 
 `python -m unittest discover -s tests -p test_stroke_appearance.py -v`
 
+`python -m unittest discover -s tests -p test_source_ink_guard.py -v`
+
 실제 Diffusers DDIM의 0-guidance 동일성, 보정 부호/손실 하강, 주 점수가 낮아지는 보정
 거부, 동결 가중치, 네 칸 입력 gradient, 동일 원본에서 Topo 배정만 바꿔도 손실이
 달라지는지 검사한다. 작은 실제 Diffusers U-Net/VAE로도 gradient 경로를 검사한다.
@@ -189,6 +230,9 @@ model revision, sampler/손실 설정, 채택 단계 수가 포함된다. 실행
 신호가 실제 DDIM을 통과해 최종 상태에 남고 보조 오차가 줄어드는지 검사한다.
 정상 추출 기준의 0 appearance loss/고정 target, 새 평균 이동에서 기대한
 sqrt(alpha_prev)만큼 실제 상태가 바뀌는지, offset=1/final alpha 처리도 검사한다.
+ink-only 전환 전후 점수 동일성과 원격 배정 조작 미분 차단, 정상 접합부의 0 원본
+오차와 새 점에 대한 밝게 하는 기울기, 전체 손실이 내려가도 국소 잉크가 늘면
+후보를 거부하는지, 작은 증가의 누적 제한과 최종 원본 검사의 저장도 검사한다.
 작은 테스트용 네트워크와 사용자의 학습된 checkpoint에 대한 품질 검증은 구분한다.
 
 실제 pretrained SD1.5 + 사용자 Topo의 Colab GPU 실행/VRAM/최종 획 개선은 실행 후

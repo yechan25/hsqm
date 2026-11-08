@@ -206,6 +206,26 @@ class GuidedDDIMTests(unittest.TestCase):
     def test_missing_objective_cannot_silently_enable_guidance(self):
         with self.assertRaises(ValueError):
             denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,config=GuidanceConfig())
+        with self.assertRaises(ValueError):
+            denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+                objective=self.objective,config=GuidanceConfig(max_new_local_ink=.002))
+
+    def test_total_loss_drop_is_rejected_when_local_source_ink_grows(self):
+        def appearance_shortcut(rgb):
+            loss=(rgb-.3).square().mean()
+            return loss,dict(per_glyph=[dict(slot=0,loss=loss)],
+                source_spill_map=(1-rgb).square().mean(1,keepdim=True).detach(),
+                source_spill_loss=(1-rgb).square().mean())
+        base,_=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            config=GuidanceConfig(noise_ratio=0))
+        output,trace=denoise(self.pipe,self.initial,self.pipe.scheduler.timesteps,self.embed,
+            objective=appearance_shortcut,config=GuidanceConfig(clean_step_ratio=.01,state_update='clean_residual',
+                start_fraction=0,end_fraction=1,every=1,max_new_local_ink=0))
+        torch.testing.assert_close(output,base,rtol=0,atol=0)
+        attempts=[a for r in trace if r['active'] for a in r['attempts']]
+        self.assertTrue(attempts)
+        self.assertTrue(all(a['reason']=='new_local_ink' for a in attempts))
+        self.assertTrue(all(a['new_local_ink_violation']>0 for a in attempts))
 
     def test_candidate_that_lowers_loss_but_lowers_primary_score_is_rejected(self):
         def conflicting(rgb):
@@ -325,7 +345,7 @@ class GuidedDDIMTests(unittest.TestCase):
                  patch('diffusion_model.run_topo_guidance.load_topology',return_value=(model,24,1)):
                 report=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'run',steps=8,
                     canvas_size=48,structure_config=asdict(small),
-                    guidance=dict(clean_step_ratio=.01,state_update='clean_residual'),compare_uniform=True)
+                    guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=.002),compare_uniform=True)
             self.assertEqual(report['status'],'complete')
             self.assertEqual(pipe.encoder_calls,1)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
@@ -336,11 +356,14 @@ class GuidedDDIMTests(unittest.TestCase):
             self.assertEqual(len(frame),20)
             self.assertIn('extracted_stroke_score_no_extra',frame)
             self.assertTrue(Path(zip_path).is_file())
+            self.assertTrue((Path(zip_path).parent/'source_ink_checks.csv').is_file())
             self.assertEqual(len(extraction['results']),20)
             self.assertEqual({p['method'] for p in report['pages']},
                              {'reference','baseline','uniform_guided','structure_guided','guided'})
             self.assertEqual(report['appearance_weight'],.5)
             self.assertEqual(report['appearance_target'],'extractor_reference')
+            self.assertEqual(report['mask_gradient'],'ink_only')
+            self.assertIn('passes_final_ink_check',report['source_ink_audit']['guided'])
             self.assertTrue(all(r['calibrated_reference_error']==0 for r in report['reference_calibration']))
             self.assertEqual(next(p for p in report['pages'] if p['method']=='structure_guided')['appearance_weight'],0)
             self.assertEqual(report['stroke_focus']['focus_strength'],2.)

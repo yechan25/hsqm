@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 import math
 
 import torch
+from stroke_model.source_ink_guard import local_ink_change
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class GuidanceConfig:
     healthy_stroke_score: float=90.
     max_healthy_stroke_drop: float=1.
     state_update: str='epsilon'
+    max_new_local_ink: float | None=None
 
     def __post_init__(self):
         if (not math.isfinite(self.noise_ratio) or self.noise_ratio<0
@@ -36,7 +38,9 @@ class GuidanceConfig:
                 or not math.isfinite(self.healthy_stroke_score) or not 0<=self.healthy_stroke_score<=100
                 or not math.isfinite(self.max_healthy_stroke_drop) or self.max_healthy_stroke_drop<0
                 or self.state_update not in ('epsilon','clean_residual')
-                or (self.state_update=='clean_residual' and self.clean_step_ratio is None)):
+                or (self.state_update=='clean_residual' and self.clean_step_ratio is None)
+                or (self.max_new_local_ink is not None and
+                    (not math.isfinite(self.max_new_local_ink) or self.max_new_local_ink<0))):
             raise ValueError('Invalid guidance schedule')
 
 
@@ -89,7 +93,7 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
     # Keep small DDIM state updates in fp32. Only U-Net inputs use model dtype.
     latent=initial.detach().float().clone()
     unet_dtype=next(pipe.unet.parameters()).dtype
-    trace=[]
+    trace=[];ink_anchor=None
     for index,t in enumerate(timesteps):
         with torch.no_grad():
             inputs=torch.cat([latent,latent]) if cfg_scale>1 else latent
@@ -118,6 +122,11 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
             record.update(loss_before=float(loss.detach()),gradient_rms=float(norm),
                 topo_score_before=_mean_score(details),per_glyph_before=_scalar_rows(details),attempts=[])
             priorities=objective.freeze_priority(details) if hasattr(objective,'freeze_priority') else None
+            source_before=details.get('source_spill_map')
+            if config.max_new_local_ink is not None and source_before is None:
+                raise ValueError('Local ink guard requires the fixed native reference sheet')
+            if details.get('source_spill_loss') is not None:
+                record['source_spill_loss_before']=float(details['source_spill_loss'].detach())
             del loss,details,clean
             if norm>1e-12:
                 if config.clean_step_ratio is not None:
@@ -161,15 +170,23 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                         score_ok=(record['topo_score_before'] is None or after_score>=record['topo_score_before']-1e-5)
                         healthy_ok,healthy_drop=_healthy_guard(record['per_glyph_before'],
                             _scalar_rows(after_details),config)
+                        ink_ok=True;ink_increase=ink_violation=0.
+                        if config.max_new_local_ink is not None:
+                            if after_details.get('source_spill_map') is None:
+                                raise ValueError('Candidate lost its source ink guard')
+                            ink_ok,ink_increase,ink_violation,ink_anchor=local_ink_change(
+                                source_before,after_details['source_spill_map'],ink_anchor,config.max_new_local_ink)
                         state_delta=float((candidate.prev_sample-original.prev_sample).square().mean().sqrt())
                         clean_delta=float((candidate.pred_original_sample-original.pred_original_sample).square().mean().sqrt())
                         reason=('loss_not_lower' if float(after)>=record['loss_before'] else
                                 'primary_score_lower' if not score_ok else
                                 'healthy_stroke_worse' if not healthy_ok else
+                                'new_local_ink' if not ink_ok else
                                 'no_state_change' if state_delta==0 else 'accepted')
                         record['attempts'].append(dict(attempt=attempt,loss_after=float(after),
                             topo_score_after=after_score,state_delta_rms=state_delta,
                             clean_delta_rms=clean_delta,max_healthy_stroke_drop=healthy_drop,reason=reason,
+                            new_local_ink_increase=ink_increase,new_local_ink_violation=ink_violation,
                             state_to_clean_transfer_ratio=state_delta/max(clean_delta,1e-12)))
                         if reason=='accepted':
                             chosen=candidate
@@ -179,6 +196,10 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                                 state_delta_rms=state_delta,clean_delta_rms=clean_delta,
                                 state_to_clean_transfer_ratio=state_delta/max(clean_delta,1e-12),
                                 state_change_to_base_step_ratio=state_delta/max(record['base_transition_rms'],1e-12))
+                            if after_details.get('source_spill_loss') is not None:
+                                record['source_spill_loss_after']=float(after_details['source_spill_loss'])
+                            if ink_anchor is not None:
+                                ink_anchor=torch.minimum(ink_anchor,after_details['source_spill_map'])
                             break
             if not record['accepted']:record['loss_after']=record['loss_before']
         latent=chosen.prev_sample.detach()

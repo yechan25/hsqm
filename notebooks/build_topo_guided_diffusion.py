@@ -16,7 +16,7 @@ def build_guided():
     source(0,'''# 4글자 공동 생성 — Topo 추출 획으로 역확산 유도
 
 Stable Diffusion 1.5의 **잡음 예측 U-Net + DDIM**, strength **0.65**, seed **100**.
-학습 범위의 기준 글자 4개를 한 장에 놓고 공동 생성합니다. 보정 없음/기존 획별 보정/윤곽 보조 보정은
+학습 범위의 기준 글자 4개를 한 장에 놓고 공동 생성합니다. 보정 없음/획 구조 보정/윤곽 보조 보정은
 VAE 샘플링과 잡음 추가까지 완료한 **동일한 초기 잠재값을 복사해** 시작합니다.
 
 각 guidance 단계에서 예상 완성 잠재값 → fp32 VAE → 4칸 torch crop/resize → 동결 Topo
@@ -30,6 +30,8 @@ VAE 샘플링과 잡음 추가까지 완료한 **동일한 초기 잠재값을 �
 보정한 완성 잠재값을 다음 상태에 넣을 때 U-Net의 잡음 방향을 유지해 보정량 상쇄를 줄입니다.
 윤곽 기준은 정상 기준 이미지에 대한 **같은 Topo의 추출 결과**로 한 번 고정합니다.
 정상 기준의 윤곽 오차는 0인지 확인하고, 기준 마스크 배정 차이를 결함으로 보정하지 않습니다.
+실제 soft 획은 그대로 평가하되, 미분에서는 획 배정을 고정하고 잉크량만 수정합니다.
+원본 해상도에서 새 국소 잉크가 늘어나는 후보를 검사하고, 최종 이미지도 별도로 확인합니다.
 획별 집중은 구조 결함과 윤곽 결함 중 큰 쪽을 사용해 최대 3배 비중을 주고, 후보 비교 중 고정합니다.
 90점 이상인 획이 같은 시점에서 1점 넘게 악화되면 보정을 거부합니다.
 연결 성분 분리·이진 윤곽 점수는 guidance에 사용하지 않습니다. 모델 체크포인트는 읽기만 합니다.
@@ -47,11 +49,13 @@ Colab GPU에서 실행하세요. 역전파가 추가되어 기존 생성보다 �
 from diffusion_model.run_topo_guidance import generate_guided_pair, evaluate_topo_pair
 GUIDANCE = dict(clean_step_ratio=.01,start_fraction=.30,end_fraction=1.,
                 every=1,backtracks=5,snapshot_every=4,state_update='clean_residual',
-                healthy_stroke_score=90.,max_healthy_stroke_drop=1.)
+                healthy_stroke_score=90.,max_healthy_stroke_drop=1.,max_new_local_ink=.002)
+MASK_GRADIENT = 'ink_only'  # Topo 배정을 바꾸려고 입력에 점을 찍는 미분 경로 제한
+SOURCE_SPILL_WEIGHT = .5  # 기준의 1픽셀 여유 밖 원본 잉크에 별도 보조 손실
 STROKE_FOCUS = dict(focus_strength=2.,max_stroke_weight=3.)
 COMPARE_UNIFORM = False  # 이전 균등 보정까지 추가 비교하려면 True (생성 경로 1개 추가)
-COMPARE_STRUCTURE = True  # 동일 예산으로 기존 획별 보정과 새 보조 손실 비교
-APPEARANCE_WEIGHT = .5  # 0이면 기존 획별 보정만 사용
+COMPARE_STRUCTURE = True  # 동일 예산·새 잉크 검사로 구조 보정과 윤곽 추가를 비교
+APPEARANCE_WEIGHT = .5  # 0이면 윤곽 보조 손실만 끔
 APPEARANCE_TARGET = 'extractor_reference'  # 정상 기준의 실제 Topo 반응으로 보조 손실 기준 고정
 APPEARANCE_CONFIG = dict(mass_radii=(1,2),mass_allowance=.03,
                          contour_allowance=.05,contour_weight=.5,priority_scale=.1)
@@ -73,7 +77,8 @@ generation = generate_guided_pair(TRAIN_MANIFEST,list(reference_select.value),CH
     guidance=GUIDANCE,structure_config=STRUCTURE_CONFIG,extra_weight=EXTRA_AUX_WEIGHT,
     stroke_focus=STROKE_FOCUS,compare_uniform=COMPARE_UNIFORM,
     appearance_weight=APPEARANCE_WEIGHT,appearance_config=APPEARANCE_CONFIG,
-    compare_structure=COMPARE_STRUCTURE,appearance_target=APPEARANCE_TARGET)
+    compare_structure=COMPARE_STRUCTURE,appearance_target=APPEARANCE_TARGET,
+    mask_gradient=MASK_GRADIENT,source_spill_weight=SOURCE_SPILL_WEIGHT)
 generation['data_preparation']=preparation
 (OUTPUT_DIR/'generation_report.json').write_text(json.dumps(generation,ensure_ascii=False,indent=2),encoding='utf-8')
 (OUTPUT_DIR/'git_commit.txt').write_text(commit,encoding='utf-8')
@@ -84,9 +89,12 @@ for ax,page in zip(axes,generation['pages']):
     ax.set_title(page['method']);ax.axis('off')
 plt.tight_layout();plt.show()
 print('채택된 guidance 단계:',generation['guided_accepted_steps'])
-print('baseline=보정 없음 / structure_guided=기존 획별 보정 / guided=윤곽·두께 보조 손실 추가')
+print('baseline=보정 없음 / structure_guided=획 구조 보정 / guided=윤곽·두께 보조 손실 추가')
 print('보정 전달 방식:',generation['guidance_config']['state_update'])
 print('정상 기준의 윤곽 오차 검증:',generation['reference_calibration'])
+print('최종 원본 잉크 검사:',generation['source_ink_audit'])
+if generation.get('quality_review_required'):
+    print('최종 원본에서 새 국소 잉크 증가가 감지됐습니다. 이 결과는 점수 상승만으로 개선으로 판정하면 안 됩니다.')
 print('동일한 시작 잠재값:',generation['initial_latent_sha256'])
 print('원본·예상 완성 이미지·보정 전후 손실:',OUTPUT_DIR)
 from diffusion_model.guidance_diagnostics import diagnose_pair
@@ -127,6 +135,7 @@ print('RGB 기울기는 입력 이미지에 대한 방향 진단이며, 실제 �
 print('최종 그림의 가중치는 해당 이미지에서 재계산한 진단값이며, 실제 단계별 가중치는 stroke_guidance_trace.csv에 있습니다.')
 print('주 점수는 Topo가 실제 추출한 soft 획에서 계산합니다. extra는 주 점수에서 제외하고 보조 항으로 별도 기록합니다.')
 print('구조 점수 공식은 이전과 같습니다. 윤곽 보조 손실과 원본 이미지를 함께 비교하세요.')
+print('새 국소 잉크 지도: new_ink_local_difference.png. 원본 후처리로 점을 지우지 않고 최종 결과를 검사합니다.')
 print('점수 상승과 원본 글자의 실제 개선을 함께 확인하세요. 채널 재배정만 좋아진 경우도 있을 수 있습니다.')
 RUN_INDEPENDENT_SOURCE_AUDIT = False  # 원본 직접 측정까지 추가 검증하려면 True
 if RUN_INDEPENDENT_SOURCE_AUDIT:

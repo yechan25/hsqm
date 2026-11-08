@@ -119,5 +119,28 @@ class AppearanceTests(unittest.TestCase):
             torch.testing.assert_close(a,b.reference,rtol=0,atol=0)
             self.assertFalse(b.reference.requires_grad)
 
+    def test_ink_only_keeps_scores_but_removes_remote_ownership_shortcut(self):
+        class InputDependentOwnership(nn.Module):
+            def forward(self,image,reference,strokes):
+                p=torch.sigmoid(10*(image[:,:,:1,:1]-.1))
+                probabilities=torch.cat([p,1-p],1).expand_as(strokes)
+                return dict(masks=image*probabilities,probabilities=probabilities)
+        strokes=self.reference.repeat(2,1,1).numpy()
+        strokes[1]=0;strokes[1,3:6,4:20]=1
+        ref=strokes.max(0)[None]
+        slots=[dict(reference=ref,strokes=strokes,bbox=[x,y,x+24,y+24]) for y in (0,24) for x in (0,24)]
+        crop=torch.from_numpy(1-ref).repeat(3,1,1)
+        image=torch.cat([torch.cat([crop,crop],2)]*2,1)[None].requires_grad_(True)
+        objective=TopoGuidance(InputDependentOwnership(),slots,extra_weight=0)
+        full,a=objective(image);full_gradient,=torch.autograd.grad(full,image)
+        objective.mask_gradient='ink_only'
+        ink,b=objective(image);ink_gradient,=torch.autograd.grad(ink,image)
+        torch.testing.assert_close(full.detach(),ink.detach(),rtol=0,atol=0)
+        self.assertGreater(float(full_gradient[...,0,0].abs().sum()),1e-5)
+        self.assertEqual(float(ink_gradient[...,0,0].abs().sum()),0)
+        self.assertGreater(float(ink_gradient.abs().sum()),0)
+        for x,y in zip(a['per_glyph'],b['per_glyph']):
+            torch.testing.assert_close(x['extracted_stroke_score_no_extra'],y['extracted_stroke_score_no_extra'],rtol=0,atol=0)
+
 
 if __name__=='__main__':unittest.main()

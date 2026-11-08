@@ -12,6 +12,7 @@ from PIL import Image
 import torch
 
 from stroke_model.stroke_appearance import StrokeAppearanceLoss,AppearanceConfig
+from stroke_model.source_ink_guard import SourceInkGuard
 
 
 def inspect_archive(archive_path,output):
@@ -37,12 +38,18 @@ def inspect_archive(archive_path,output):
                         reference_response_appearance_loss=float(value)))
         pages={p['method']:p for p in report['pages']}
         images={}
-        for method in ('baseline','guided'):
+        for method in ('reference','baseline','guided'):
             page=pages[method]
             name=f"generation/page_{page['page_id']:03d}_{method}.png"
             with Image.open(io.BytesIO(archive.read(name))) as image:
                 images[method]=np.array(image.convert('RGB'),dtype=np.float32)
         diff=abs(images['guided']-images['baseline'])
+    guard=SourceInkGuard(torch.from_numpy(images['reference']/255).permute(2,0,1)[None])
+    raw={method:guard(torch.from_numpy(image/255).permute(2,0,1)[None]) for method,image in images.items()}
+    increase=(raw['guided']['local_excess']-raw['baseline']['local_excess']).clamp_min(0)[0,0]
+    peak=np.unravel_index(int(increase.argmax()),tuple(increase.shape))
+    allowance=report.get('guidance_config',{}).get('max_new_local_ink')
+    allowance=.002 if allowance is None else allowance
     accepted=[r for r in trace if r['accepted']]
     transfer=[r['state_delta_rms']/max(r['clean_delta_rms'],1e-12) for r in accepted
               if 'state_delta_rms' in r and 'clean_delta_rms' in r]
@@ -58,6 +65,9 @@ def inspect_archive(archive_path,output):
         min_state_to_clean_transfer_ratio=min(transfer) if transfer else None,
         pixel_mae_255=float(diff.mean()),
         changed_pixel_over_8_percent=float((diff.max(-1)>8).mean()*100),
+        max_new_local_ink_vs_baseline=float(increase.max()),
+        new_local_ink_peak_xy=[int(peak[1]),int(peak[0])],
+        passes_final_ink_check=float(increase.max())<=allowance+1e-6,
         final_active_attempts=next((r.get('attempts',[]) for r in reversed(trace) if r['active']),[]),
         primary_scores=scores[['method','slot','extracted_stroke_score_no_extra']].to_dict('records'),
         appearance=appearance.to_dict('records'))
@@ -66,6 +76,7 @@ def inspect_archive(archive_path,output):
 
 
 if __name__=='__main__':
+    torch.set_num_threads(1)
     parser=argparse.ArgumentParser()
     parser.add_argument('archive')
     parser.add_argument('--output',default='outputs/guidance_archive_audit')

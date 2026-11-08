@@ -61,6 +61,30 @@ def diagnose_pair(output,show=True):
         meaningful_changed_pixel_percent_over_8=float((difference.max(-1)>8).mean()*100),
         ddim_state_dtype=report.get('ddim_state_dtype','not recorded in this older run'),
         final_latent_rms_difference=report.get('final_latent_rms_difference'))
+    # Check native RGB, not Topo channels or the globally averaged score.
+    import torch
+    from stroke_model.source_ink_guard import SourceInkGuard
+    with Image.open(pages['reference']['input']) as reference:
+        ref_rgb=torch.from_numpy(np.asarray(reference.convert('RGB'),np.float32).copy()/255).permute(2,0,1)[None]
+    guard=SourceInkGuard(ref_rgb)
+    raw={method:guard(torch.from_numpy(array.copy()/255).permute(2,0,1)[None])
+         for method,array in arrays.items()}
+    added=(raw['guided']['local_excess']-raw['baseline']['local_excess']).clamp_min(0)[0,0].numpy()
+    peak=np.unravel_index(int(added.argmax()),added.shape)
+    allowance=report.get('guidance_config',{}).get('max_new_local_ink')
+    allowance=.002 if allowance is None else allowance
+    summary.update(max_new_local_ink_vs_baseline=float(added.max()),
+                   new_local_ink_peak_xy=[int(peak[1]),int(peak[0])],
+                   passes_final_ink_check=bool(added.max()<=allowance+1e-6))
+    fig2,axes2=plt.subplots(1,2,figsize=(10,5),layout='constrained')
+    axes2[0].imshow(arrays['guided'].astype(np.uint8));axes2[0].set_title('Guided: original RGB')
+    heat2=axes2[1].imshow(added,cmap='magma',vmin=0,vmax=max(float(added.max()),1e-6))
+    axes2[1].set_title('New local reference-excess ink\nvs baseline; native 5x5 patches')
+    fig2.colorbar(heat2,ax=axes2[1],fraction=.045)
+    for axis in axes2:axis.axis('off')
+    fig2.savefig(output/'new_ink_local_difference.png',dpi=140)
+    if show:plt.show()
+    plt.close(fig2)
     (output/'guidance_diagnostics.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
     per_slot=[]
     for sample in report['results']:
@@ -90,6 +114,9 @@ def diagnose_pair(output,show=True):
     print('평균 실제 다음 상태 변화 RMS:',summary['mean_state_delta_rms'])
     print('예상 완성 보정 대비 다음 상태 전달 비율:',summary['mean_state_to_clean_transfer_ratio'])
     print('채널값이 8/255 넘게 변한 픽셀 비율(%):',summary['meaningful_changed_pixel_percent_over_8'])
+    print('최종 새 국소 잉크 증가 / 허용량:',summary['max_new_local_ink_vs_baseline'],'/',allowance)
+    if not summary['passes_final_ink_check']:
+        print('최종 원본에 새 국소 잉크 증가가 있습니다. 점수 상승만으로 개선으로 판정하지 마세요.')
     if summary['mean_state_delta_rms'] is None:
         print('이전 실행 로그에는 실제 상태 변화량이 없습니다. 기존 PNG 차이는 위에서 확인할 수 있습니다.')
     return summary,frame
