@@ -28,9 +28,13 @@ class GuidanceConfig:
     max_new_local_ink: float | None=None
     local_edit: bool=False
     local_iterations: int=24
+    local_halo_radius: int=0
+    local_final_iterations: int=0
 
     def __post_init__(self):
-        if (type(self.local_iterations) is not int or self.local_iterations<1
+        if (type(self.local_halo_radius) is not int or self.local_halo_radius<0
+                or type(self.local_final_iterations) is not int or self.local_final_iterations<0
+                or type(self.local_iterations) is not int or self.local_iterations<1
                 or (self.local_edit and self.state_update!='clean_residual')
                 or not math.isfinite(self.noise_ratio) or self.noise_ratio<0
                 or (self.clean_step_ratio is not None and
@@ -121,11 +125,12 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                 with torch.no_grad():
                     anchor=decode_estimate(pipe,original.pred_original_sample)
                     reference=(1-objective.source_guard.reference_ink).expand_as(anchor)
-                    editor=LocalReferenceEdit(reference,anchor)
+                    editor=LocalReferenceEdit(reference,anchor,halo_radius=config.local_halo_radius)
                     objective.local_editor=editor
             with torch.no_grad():editor.rebase(decode_estimate(pipe,original.pred_original_sample))
             edited,summary=optimize_local(original.pred_original_sample,
-                lambda z:decode_estimate(pipe,z),editor,iterations=config.local_iterations,
+                lambda z:decode_estimate(pipe,z),editor,iterations=(max(config.local_iterations,config.local_final_iterations)
+                    if index==len(timesteps)-1 else config.local_iterations),
                 step_ratio=config.clean_step_ratio)
             record.update(summary)
             if summary['accepted']:

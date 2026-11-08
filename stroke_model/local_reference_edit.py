@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 
 class LocalReferenceEdit:
-    def __init__(self, reference, anchor, threshold=.2, radius=1):
+    def __init__(self, reference, anchor, threshold=.2, radius=1, halo_radius=0):
         if reference.shape != anchor.shape or reference.ndim != 4 or reference.shape[1] != 3:
             raise ValueError('Matching BCHW RGB sheets required')
         self.anchor=anchor.detach()
@@ -13,6 +13,11 @@ class LocalReferenceEdit:
         ink=1-anchor.mean(1,keepdim=True).clamp(0,1)
         support=F.max_pool2d(ref,2*radius+1,1,radius)
         self.erase=((ink-support)>threshold).float().detach()
+        if type(halo_radius) is not int or halo_radius<0:raise ValueError('Nonnegative halo radius required')
+        if halo_radius:
+            # Expand only near detected defects and only into clear reference background.
+            halo=F.max_pool2d(self.erase,2*halo_radius+1,1,halo_radius)*(support<.05)
+            self.erase=torch.maximum(self.erase,halo).detach()
         self.fill=((ref-ink)>threshold).float().detach()*(1-self.erase)
         self.protect=1-(self.erase+self.fill).clamp(0,1)
         self.rebase(anchor)

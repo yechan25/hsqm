@@ -18,6 +18,7 @@ def build_guided():
 기존 Topo는 사후 획 평가에 사용합니다. 보정은 기준과 비교한 삭제/복원/보호 지도에서 직접 계산합니다.
 기본 STEPS=100으로 실제 역확산을 65단계 수행합니다(strength=0.65). 이전 설정은 39단계입니다.
 후반부 첫 편집 단계에서 지도를 고정하고, 최대 23개 보정 단계마다 48회 잠재값을 수정합니다.
+삭제 영역 주변 2픽셀 중 기준의 빈 배경만 추가로 정리하고, 마지막 단계는 최대 96회 보정합니다.
 정상 획 보호 한도와 한 번의 보정량은 기존대로이며, 실행 시간은 늘어납니다.
 보호 영역의 평균/국소 변화와 잠재값 이동 예산을 제한합니다. 전체 추출 점수 상승은 채택 조건이 아닙니다.
 기준과 생성물의 위치가 맞는 조건을 전제로 하며, 폰트·정렬 차이도 편집 대상으로 잡힐 수 있습니다.
@@ -32,7 +33,7 @@ def build_guided():
     setup=setup.replace('STRENGTHS = [.65, .85]','STRENGTHS = [.65]')
     setup+='''
 from diffusion_model.run_topo_guidance import generate_guided_pair, evaluate_topo_pair
-GUIDANCE = dict(local_edit=True,local_iterations=48,clean_step_ratio=.01,start_fraction=.65,end_fraction=1.,
+GUIDANCE = dict(local_edit=True,local_iterations=48,local_halo_radius=2,local_final_iterations=96,clean_step_ratio=.01,start_fraction=.65,end_fraction=1.,
                 every=1,backtracks=5,snapshot_every=4,state_update='clean_residual',
                 healthy_stroke_score=90.,max_healthy_stroke_drop=1.,max_new_local_ink=.002)
 MASK_GRADIENT = 'ink_only'  # Topo 배정을 바꾸려고 입력에 점을 찍는 미분 경로 제한

@@ -38,6 +38,17 @@ class LocalEditTests(unittest.TestCase):
         self.assertLessEqual(float(m['protected'])**.5,.02)
         self.assertLess(float(m['edit']),float(e.measure(bad)['edit']))
 
+    def test_halo_cleans_faint_boundary_without_erasing_reference(self):
+        ref,bad=self.sample();bad[:,:,13:14,9:15]=.9
+        old=LocalReferenceEdit(ref,bad)
+        new=LocalReferenceEdit(ref,bad,halo_radius=2)
+        self.assertEqual(float(old.erase[:,:,13:14,9:15].sum()),0)
+        self.assertGreater(float(new.erase[:,:,13:14,9:15].sum()),0)
+        self.assertEqual(float(new.erase[:,:,4:28,16:19].sum()),0)
+        result,trace=optimize_local(bad,lambda z:z,new,iterations=48,budget_ratio=.4)
+        self.assertTrue(trace['accepted'])
+        self.assertGreater(float(result[:,:,13:14,9:15].mean()),.9)
+
     def test_maps_stay_fixed_after_rebase(self):
         ref,bad=self.sample();e=LocalReferenceEdit(ref,bad);mask=e.erase.clone()
         e.rebase(ref);self.assertTrue(torch.equal(mask,e.erase))
