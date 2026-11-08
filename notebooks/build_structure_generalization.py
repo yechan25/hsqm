@@ -15,8 +15,9 @@ def build():
 표준 글자 RGB와의 픽셀 손실·삭제 지도·정답 윤곽 맞추기는 보정에 사용하지 않습니다.
 이 지표는 기하 모멘트 기반 대리 지표이며 완전한 위상/문자 인식 지표가 아닙니다.
 
-기본은 INIT_MODE='external', strength=0.35: 다른 폰트로 같은 네 글자를 만들어 입력합니다.
+기본은 INIT_MODE='external', strength=0.65: 다른 폰트로 같은 네 글자를 만들어 입력합니다.
 3번 셀에서 표준 글자 네 개를 선택하고 같은 문자를 순서대로 입력한 뒤 폰트를 선택하세요.
+이전 보정 실험과 같은 STEPS=100, strength=0.65, seed=100을 사용합니다(실제 역확산 65단계).
 잡음 생성은 INIT_MODE='noise'로 명시한 실험에만 사용합니다. SD1.5의 네 글자 생성은 보장되지 않습니다.
 INPUT_SHEET 경로를 지정하면 직접 준비한 2×2 이미지를 사용합니다.
 외부 이미지의 정답 획/깨끗한 짝 이미지는 필요하지 않습니다. 문자 순서·배치는 사용자가 맞춰야 합니다.
@@ -28,12 +29,12 @@ SD1.5가 네 글자를 만들지 못한 결과도 제외하지 않습니다. 템
 """)
     put(1,''.join(notebook['cells'][1]['source'])+"\nsubprocess.run(['apt-get','update','-qq'],check=True)\nsubprocess.run(['apt-get','install','-y','-qq','fonts-nanum'],check=True)\n")
     settings=''.join(notebook['cells'][2]['source']).split('from diffusion_model.run_topo_guidance import')[0]
-    settings=settings.replace('STEPS = 100  # strength=.65에서 실제 역확산 65단계','STEPS = 50')
+    settings=settings.replace('STEPS = 100  # strength=.65에서 실제 역확산 65단계','STEPS = 100')
     settings+="""
 # Separate experimental path; old pixel-control notebook is preserved.
 SEED=100  # Repeat with 101, 102, ...; keep all results
 INIT_MODE='external'  # noise is an optional separate stress test
-STRENGTH=.35
+STRENGTH=.65
 AUTO_FONT_INPUT=True
 INPUT_SHEET=None
 GUIDANCE=dict(local_edit=False,clean_step_ratio=.01,start_fraction=.5,end_fraction=1.,
