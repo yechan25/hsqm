@@ -34,8 +34,14 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         'stable-diffusion-v1-5/stable-diffusion-v1-5',revision=None,steps=30,canvas_size=576,
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
-        appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False):
+        appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False,
+        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
+    if type(seed) is not int or seed<0:raise ValueError('Nonnegative integer seed required')
+    if guidance_signal not in ('pixel_control','template_structure'):raise ValueError('Unknown guidance signal')
+    if init_mode not in ('reference','external','noise'):raise ValueError('Unknown initialization mode')
+    if init_mode=='noise' and not prompt_text:raise ValueError('Explicit target prompt required for noise generation')
+    if init_mode=='external' and input_sheet is None:raise ValueError('External input sheet required')
     selected=list(manifest_rows)
     catalog={row['manifest_row']:row for row in training_catalog(manifest)}
     if len(selected)!=4 or len(set(selected))!=4 or any(row not in catalog for row in selected):
@@ -44,6 +50,10 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
             GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,
                            state_update='clean_residual',max_new_local_ink=.002))
+    if guidance_signal=='template_structure' and (config.local_edit or config.max_new_local_ink is not None):
+        raise ValueError('Template structure mode requires local_edit=False and max_new_local_ink=None')
+    if guidance_signal=='template_structure' and (compare_uniform or compare_structure):
+        raise ValueError('Use only baseline/guided in template structure mode')
     if appearance_target not in ('extractor_reference','partition_reference'):
         raise ValueError('Unknown appearance target mode')
     structure=StructureConfig(**structure_config) if isinstance(structure_config,dict) else structure_config or StructureConfig()
@@ -69,14 +79,27 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     prompt=('a typography sheet with 4 Korean Hangul glyphs arranged in 2 rows and 2 columns, '
             'black ink on plain white background, flat front view, no grid lines, '
             'preserve the glyphs and layout of the input image')
+    if prompt_text:prompt=prompt_text
     negative='photograph, scenery, paper texture, shadows, colored background, grid lines, decorations'
     with torch.no_grad():
         positive,negative_embeds=pipe.encode_prompt(prompt,device,1,True,negative_prompt=negative)
         embeddings=torch.cat([negative_embeds,positive])
         pipe.scheduler.set_timesteps(steps,device=device)
-        timesteps,effective_steps=pipe.get_timesteps(steps,.65,device)
-        initial=pipe.prepare_latents(pipe.image_processor.preprocess(initial_image),timesteps[:1],
-            1,1,embeddings.dtype,device,torch.Generator('cpu').manual_seed(100))
+        if init_mode=='noise':
+            timesteps=pipe.scheduler.timesteps;effective_steps=len(timesteps)
+            initial=torch.randn((1,pipe.unet.config.in_channels,
+                canvas_size//pipe.vae_scale_factor,canvas_size//pipe.vae_scale_factor),
+                generator=torch.Generator('cpu').manual_seed(seed),dtype=embeddings.dtype).to(device)
+            initial=initial*pipe.scheduler.init_noise_sigma
+        else:
+            starting_image=initial_image
+            if init_mode=='external':
+                with Image.open(input_sheet) as source:
+                    if source.size!=initial_image.size:raise ValueError('External sheet must match canvas size')
+                    starting_image=source.convert('RGB')
+            timesteps,effective_steps=pipe.get_timesteps(steps,.65,device)
+            initial=pipe.prepare_latents(pipe.image_processor.preprocess(starting_image),timesteps[:1],
+                1,1,embeddings.dtype,device,torch.Generator('cpu').manual_seed(seed))
     # Encoding stays identical to ordinary fp16 img2img. Decode BOTH runs in fp32
     # for stable VAE/Topo input gradients; compare these paired runs, not old PNGs.
     pipe.vae.to(dtype=torch.float32)
@@ -89,13 +112,22 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         calibration=objective.calibrate_appearance(reference_rgb)
     else:objective.set_reference_sheet(reference_rgb)
     del reference_rgb
+    guiding_objective=objective
+    if guidance_signal=='template_structure':
+        from stroke_model.template_structure_guidance import TemplateStructureGuidance
+        guiding_objective=TemplateStructureGuidance(model,slots).to(device).eval()
     destination.mkdir(parents=True,exist_ok=False)
+    if init_mode=='external':starting_image.save(destination/'external_input.png')
     checkpoint_hash=_file_hash(checkpoint)
     initial_hash=tensor_hash(initial)
-    report=dict(experiment='paired_joint_topo_backward_guidance',status='running',model_id=model_id,
+    report=dict(guidance_signal=guidance_signal,init_mode=init_mode,
+        reference_encoded_as_input=init_mode=='reference',
+        external_input=str(input_sheet) if input_sheet else None,
+        pixel_audit_is_auxiliary=guidance_signal=='template_structure',
+        experiment='paired_joint_topo_backward_guidance',status='running',model_id=model_id,
         requested_revision=revision,checkpoint=str(checkpoint),checkpoint_sha256=checkpoint_hash,
         checkpoint_epoch=epoch,training_manifest=str(manifest),selected_manifest_rows=selected,
-        seed=100,strength=.65,glyph_count=4,steps=steps,effective_steps=int(effective_steps),
+        seed=seed,strength=.65,glyph_count=4,steps=steps,effective_steps=int(effective_steps),
         timesteps=[int(t) for t in timesteps],initial_latent_sha256=initial_hash,
         guidance_config=asdict(config),structure_config=asdict(structure),extra_weight=extra_weight,
         stroke_focus=focus,compare_uniform=bool(compare_uniform),
@@ -117,6 +149,12 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         diffusers_version=diffusers.__version__,torch_version=torch.__version__,
         prompt=prompt,negative_prompt=negative,scheduler=dict(pipe.scheduler.config),pages=[],results=[])
 
+    if guidance_signal=='template_structure':
+        report.update(editing_mode='template_normalized_geometry',primary_signal='frozen extractor normalized geometry descriptors',
+            primary_score='descriptor loss (not calibrated quality)',ownership_backward=False,
+            gradient_path='clean latent -> VAE -> ink with detached extractor ownership -> normalized descriptors',
+            strength=None if init_mode=='noise' else .65)
+
     def write_report():
         (destination/'generation_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
@@ -124,13 +162,18 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     def save_page(image,method,filtered=None):
         nonlocal baseline_source_map
         page_id=len(report['pages']);path=destination/f'page_{page_id:03d}_{method}.png';image.save(path)
-        label=f'{method} | 4 glyphs | strength=.65 seed=100'
+        label=f'{method} | 4 glyphs | '+('noise initialization' if init_mode=='noise' else 'strength=.65')+f' seed={seed}'
         page=dict(page_id=page_id,method=method,label=label,input=str(path),glyph_count=4,
                   control=method=='reference',guidance_on=method!='baseline' and method!='reference',initial_latent_sha256=initial_hash,
                   appearance_weight=appearance_weight if method=='guided' else 0.)
         report['pages'].append(page)
         rgb=torch.from_numpy(np.asarray(image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
-        with torch.no_grad():source=objective.source_guard(rgb)
+        with torch.no_grad():
+            source=objective.source_guard(rgb)
+            if guidance_signal=='template_structure':
+                value,detail=guiding_objective(rgb)
+                report.setdefault('structure_audit',{})[method]=dict(loss=float(value),
+                    per_glyph=[float(r['descriptor_loss']) for r in detail['per_glyph']])
         source_map=source['local_excess'].detach().cpu()
         audit=dict(source_spill_loss=float(source['loss']))
         if method=='baseline':baseline_source_map=source_map
@@ -138,7 +181,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
             increase=float((source_map-baseline_source_map).amax().clamp_min(0))
             audit.update(new_local_ink_vs_baseline=increase,
                 passes_final_ink_check=increase<=(config.max_new_local_ink if config.max_new_local_ink is not None else .002)+1e-6)
-            if method=='guided':report['quality_review_required']=not audit['passes_final_ink_check']
+            if method=='guided' and guidance_signal=='pixel_control':report['quality_review_required']=not audit['passes_final_ink_check']
         report.setdefault('source_ink_audit',{})[method]=audit
         for slot in slots:
             prefix=destination/f'sample_{len(report["results"]):04d}'
@@ -147,7 +190,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
             np.savez_compressed(str(prefix)+'.npz',image=ink,reference=slot['reference'],reference_strokes=slot['strokes'])
             report['results'].append(dict(**slot['entry'],input=str(prefix)+'_raw.png',npz=str(prefix)+'.npz',
                 page_id=page_id,page_input=str(path),glyph_count=4,slot=slot['slot'],crop_bbox=slot['bbox'],
-                method=method,guidance_on=method not in ('baseline','reference'),control=method=='reference',strength=.65,seed=100,
+                method=method,guidance_on=method not in ('baseline','reference'),control=method=='reference',strength=None if init_mode=='noise' else .65,seed=seed,
                 safety_filtered=filtered,label=label+f' | slot={slot["slot"]+1}'))
         write_report()
 
@@ -189,7 +232,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         for method,cfg in methods:
             objective.focus_strength=0. if method=='uniform_guided' else focus['focus_strength']
             objective.appearance_weight=appearance_weight if method=='guided' else 0.
-            latents,trace=denoise(pipe,initial,timesteps,embeddings,objective=objective,config=cfg,on_step=callback(method))
+            latents,trace=denoise(pipe,initial,timesteps,embeddings,objective=guiding_objective,config=cfg,on_step=callback(method))
             report[method+'_final_latent_sha256']=tensor_hash(latents)
             if method=='baseline':baseline_final=latents.detach().float().cpu()
             else:

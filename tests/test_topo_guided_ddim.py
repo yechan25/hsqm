@@ -361,6 +361,18 @@ class GuidedDDIMTests(unittest.TestCase):
                 report=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'run',steps=8,
                     canvas_size=48,structure_config=asdict(small),
                     guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=.002),compare_uniform=True)
+                pipe.unet.config=SimpleNamespace(in_channels=3);pipe.vae_scale_factor=1
+                general=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'general',steps=8,
+                    canvas_size=48,guidance_signal='template_structure',init_mode='noise',
+                    prompt_text='four specified characters in a 2 by 2 sheet',
+                    guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=None),
+                    compare_structure=False)
+                self.assertFalse(general['reference_encoded_as_input'])
+                self.assertEqual(general['effective_steps'],8)
+                self.assertIsNone(general['strength'])
+                self.assertEqual(general['editing_mode'],'template_normalized_geometry')
+                self.assertEqual(len(general['structure_audit']),3)
+                self.assertEqual(len({p['initial_latent_sha256'] for p in general['pages']}),1)
             self.assertEqual(report['status'],'complete')
             self.assertEqual(pipe.encoder_calls,1)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
