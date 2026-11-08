@@ -49,6 +49,13 @@ print('빨강은 추가 잉크로 계산된 위치입니다. 옅은 성분을 �
 print('막대의 왼쪽에 몰리면 옅은 픽셀의 영향, 오른쪽에 몰리면 진한 잉크의 영향을 확인하세요.')
 print('밝기 구간만으로 배경과 실제 추가 획을 자동 판정하지는 않습니다.')
 print('진단 그림 저장:', result['save_dir'])
+from stroke_model.source_quality_v5 import compare_quality_v5
+QUALITY_CONFIG = {}  # 실험 기본값. 원래 점수는 보존하고 새 비교 열을 추가합니다.
+quality_report, quality_scores = compare_quality_v5(result, config=QUALITY_CONFIG, show=True)
+display(quality_scores[['label','raw_source_score','foreground_structural_score',
+    'contour_excess','contour_score_cap','experimental_score']])
+print('새 점수는 실험용입니다. 정상 글꼴 차이와 실제 돌출·패임을 구분해 그림으로 확인하세요.')
+print('윤곽 항은 현재 진단용이며, 역확산 guidance에 바로 미분해서 쓸 수 있는 구현은 아닙니다.')
 from google.colab import files
 download = widgets.Button(description='기존 진단 ZIP 다운로드')
 debug_path = result['debug_zip']

@@ -18,6 +18,10 @@
 밝기 구간은 원인 확인용이며 배경/실제 추가 획의 자동 정답 판정이 아니다.
 생성 폴더에 진단 PNG를 따로 저장한다. 기존 진단 ZIP은 기존 측정 배열을 담고 있다.
 
+5번 셀은 추가로 [전경·윤곽 실험 점수](../stroke_model/SOURCE_QUALITY_V5.md)를 함께 산출한다.
+기존 raw source 점수는 유지하고 전경 구조·윤곽 반응·실험 총점을 따로 표시한다.
+새 윤곽 항은 아직 진단용이며 미분 가능한 역확산 guidance 구현이 아니다.
+
 ## 선택한 실험
 
 - 공개 사전학습 `stable-diffusion-v1-5/stable-diffusion-v1-5`의 img2img + DDIM.
