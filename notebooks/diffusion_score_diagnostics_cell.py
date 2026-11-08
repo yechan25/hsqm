@@ -6,6 +6,7 @@ from matplotlib.colors import PowerNorm
 
 # 같은 생성 폴더의 점수 결과가 있으면 재사용합니다.
 RECOMPUTE = False
+print('Raw source는 칸 전체 점수입니다. 아래에서 본체 진단과 비대응 잉크를 분리해 표시합니다.')
 same_run = False
 if 'result' in globals():
     entries = result.get('extraction', {}).get('results', [])
@@ -52,8 +53,13 @@ print('진단 그림 저장:', result['save_dir'])
 from stroke_model.source_quality_v5 import compare_quality_v5
 QUALITY_CONFIG = {}  # 실험 기본값. 원래 점수는 보존하고 새 비교 열을 추가합니다.
 quality_report, quality_scores = compare_quality_v5(result, config=QUALITY_CONFIG, show=True)
-display(quality_scores[['label','raw_source_score','foreground_structural_score',
-    'contour_excess','contour_score_cap','experimental_score']])
+quality_view = quality_scores.copy()
+quality_view['unassigned_ink_percent'] = 100*quality_view['unassigned_ink_fraction']
+display(quality_view[['label','body_diagnostic_score','body_structural_score','body_contour_score_cap',
+    'unassigned_component_count','unassigned_ink_percent','unassigned_ink_review_required',
+    'experimental_score','raw_source_score']])
+print('자홍색은 기준 획과 겹치지 않는 분리 성분입니다. 본체 진단에서만 분리하며 원본/전체 점수에는 보존합니다.')
+print('비대응 성분이 실제 추가 획인지 주변 표식인지는 그림으로 확인해야 합니다. 본체 점수만으로 정상 판정하지 마세요.')
 print('새 점수는 실험용입니다. 정상 글꼴 차이와 실제 돌출·패임을 구분해 그림으로 확인하세요.')
 print('윤곽 항은 현재 진단용이며, 역확산 guidance에 바로 미분해서 쓸 수 있는 구현은 아닙니다.')
 from google.colab import files

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 from stroke_model.source_quality_v5 import (foreground_evidence, contour_diagnosis,
-                                          assess_source_quality)
+                                          assess_source_quality, separate_unassigned_ink)
 from stroke_model.source_structure import PreparedSourceMetric
 
 
@@ -53,6 +53,35 @@ class QualityV5Tests(unittest.TestCase):
         defect=assess_source_quality(extra,self.reference,self.strokes,registration=pose)
         self.assertGreater(defect['foreground_extra'],.1)
         self.assertLess(defect['experimental_score'],cleaned['experimental_score'])
+
+    def test_detached_marks_are_separate_but_still_count_in_whole_crop_score(self):
+        reference=np.zeros((64,64),np.float32)
+        reference[10:42,12:17]=1
+        reference[15:35,38:44]=1  # A legitimate disconnected second stroke.
+        strokes=np.stack([reference*(np.indices(reference.shape)[1]<30),
+                          reference*(np.indices(reference.shape)[1]>=30)])
+        pose=dict(parameters=[0,0,0,1,1,0])
+        baseline=assess_source_quality(reference,reference,strokes,registration=pose)
+        self.assertEqual(baseline['unassigned_component_count'],0)
+        self.assertFalse(baseline['unassigned_ink_review_required'])
+        extra=reference.copy();extra[53:57,54:58]=1
+        measured=assess_source_quality(extra,reference,strokes,registration=pose)
+        self.assertEqual(measured['unassigned_component_count'],1)
+        self.assertTrue(measured['unassigned_ink_review_required'])
+        self.assertGreater(measured['unassigned_ink_fraction'],.03)
+        np.testing.assert_array_equal(measured['body_image'],reference)
+        self.assertAlmostEqual(measured['body_diagnostic_score'],baseline['body_diagnostic_score'])
+        self.assertLess(measured['experimental_score'],baseline['experimental_score'])
+        self.assertEqual(float(measured['source_image'][54,55]),1)  # No original pixel deletion.
+
+    def test_attached_extra_branch_and_missing_stroke_remain_body_errors(self):
+        pose=dict(parameters=[0,0,0,1,1,0])
+        branch=self.reference.copy();branch[22:27,35:46]=1
+        measured=assess_source_quality(branch,self.reference,self.strokes,registration=pose)
+        self.assertEqual(measured['unassigned_component_count'],0)
+        self.assertLess(measured['body_diagnostic_score'],90)
+        missing=assess_source_quality(np.zeros_like(self.reference),self.reference,self.strokes,registration=pose)
+        self.assertEqual(missing['body_diagnostic_score'],0)
 
 
 if __name__=='__main__':

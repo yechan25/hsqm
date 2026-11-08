@@ -10,7 +10,7 @@ from pathlib import Path
 import zipfile
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, gaussian_filter, maximum_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter, maximum_filter, label
 import torch
 
 from .source_structure import SourceConfig, PreparedSourceMetric, register_reference
@@ -26,15 +26,19 @@ class QualityConfig:
     contour_allowance: float = .08
     contour_scale: float = .05
     contour_thresholds: tuple = (.35, .5, .65)
+    component_threshold: float = .35
+    component_halo: float = 1.5
 
     def __post_init__(self):
-        for name in ('foreground_midpoint','foreground_temperature','contour_sigma','contour_allowance','contour_scale'):
+        for name in ('foreground_midpoint','foreground_temperature','contour_sigma','contour_allowance','contour_scale',
+                     'component_threshold','component_halo'):
             if not math.isfinite(getattr(self,name)):
                 raise ValueError('Quality settings must be finite')
         if (not 0 < self.foreground_midpoint < 1 or self.foreground_temperature <= 0
                 or self.contour_sigma <= 0 or self.contour_allowance < 0 or self.contour_scale <= 0
                 or type(self.contour_position_tolerance) is not int or self.contour_position_tolerance < 0
-                or not self.contour_thresholds or any(not 0 < t < 1 for t in self.contour_thresholds)):
+                or not self.contour_thresholds or any(not 0 < t < 1 for t in self.contour_thresholds)
+                or not 0 < self.component_threshold < 1 or self.component_halo < 0):
             raise ValueError('Invalid quality settings')
 
 
@@ -58,6 +62,35 @@ def _response(ink, threshold, sigma):
     field = distance_transform_edt(binary)-distance_transform_edt(~binary)
     boundary = np.abs(field) <= 1.01
     return (field-gaussian_filter(field,sigma))*boundary, boundary
+
+
+def separate_unassigned_ink(image, support, config=None):
+    """Separate whole components with NO overlap with the expected support.
+
+    Does not select the largest component: legitimate disconnected Hangul strokes
+    remain when they overlap ANY expected stroke. Unassigned is a geometric label,
+    never proof of harmless dirt. The strict whole-crop score is retained.
+    """
+    cfg=config or QualityConfig()
+    image,support=[np.asarray(x,dtype=np.float32).squeeze() for x in (image,support)]
+    if image.ndim!=2 or support.shape!=image.shape:
+        raise ValueError('Need matching H,W image/support')
+    labels,count=label(image>cfg.component_threshold,np.ones((3,3),bool))
+    unmatched=[]
+    for index in range(1,count+1):
+        if not ((labels==index)&(support>=.5)).any():
+            unmatched.append(index)
+    mask=np.zeros_like(image,dtype=bool)
+    if unmatched:
+        # Include nearby anti-alias pixels, without masking another component.
+        distance,nearest=distance_transform_edt(labels==0,return_indices=True)
+        nearest_label=labels[tuple(nearest)]
+        mask=np.isin(nearest_label,unmatched)&(distance<=cfg.component_halo)
+    unassigned=image*mask
+    return dict(body_image=image*(~mask),unassigned_ink_map=unassigned,
+        unassigned_component_count=len(unmatched),
+        unassigned_ink_fraction=float(unassigned.sum()/max(float(image.sum()),1.)),
+        unassigned_ink_review_required=bool(unmatched))
 
 
 def contour_diagnosis(image, reference, config=None):
@@ -109,8 +142,26 @@ def assess_source_quality(image, reference, strokes, *, registration=None,
     registered = measured['registered_image'][0,0].numpy()
     contour = contour_diagnosis(registered,target_cleaned,cfg)
     clean_score = float(structural['score'][0])
+    separated=separate_unassigned_ink(cleaned.squeeze().numpy(),measured['support'][0,0].numpy(),cfg)
+    if separated['unassigned_component_count']:
+        with torch.no_grad():
+            body_measured=metric(torch.from_numpy(separated['body_image']))
+            body_structure=StructuralIndicator(score_cfg)(body_measured['missing'],body_measured['split'],
+                body_measured['junction'],extra=body_measured['extra'])
+        body_contour=contour_diagnosis(body_measured['registered_image'][0,0].numpy(),target_cleaned,cfg)
+        body_structural_score=float(body_structure['score'][0])
+    else:
+        body_measured,body_contour=measured,contour
+        body_structural_score=clean_score
     return dict(foreground_structural_score=clean_score, foreground_extra=float(measured['extra'][0]),
                 experimental_score=min(clean_score,contour['contour_score_cap']),
+                body_structural_score=body_structural_score,
+                body_contour_score_cap=body_contour['contour_score_cap'],
+                body_diagnostic_score=min(body_structural_score,body_contour['contour_score_cap']),
+                body_registered_image=body_measured['registered_image'][0,0].numpy(),
+                body_protrusion_map=body_contour['protrusion_map'],
+                body_indentation_map=body_contour['indentation_map'],
+                **separated,
                 registration=registration, source_image=source.squeeze().numpy(),
                 foreground_image=cleaned.squeeze().numpy(),registered_image=registered,
                 reference_image=target_cleaned,foreground_extra_map=measured['extra_map'][0,0].numpy(),
@@ -144,23 +195,30 @@ def compare_quality_v5(result, *, config=None, show=True):
         row = {key:sample.get(key) for key in ('label','manifest_row','control','glyph_count','page_id','slot')}
         row.update(sample=index,raw_source_score=previous['structural_score'],
                    **{key:assessed[key] for key in ('foreground_structural_score','foreground_extra',
-                       'contour_excess','contour_score_cap','experimental_score')},maps=str(path))
+                       'contour_excess','contour_score_cap','experimental_score','body_structural_score',
+                       'body_contour_score_cap','body_diagnostic_score','unassigned_component_count',
+                       'unassigned_ink_fraction','unassigned_ink_review_required')},maps=str(path))
         rows.append(row)
         fig,axes=plt.subplots(1,4,figsize=(15,4),layout='constrained')
         axes[0].imshow(assessed['source_image'],cmap='gray_r',vmin=0,vmax=1)
         axes[0].set_title('Original scored input')
         axes[1].imshow(assessed['foreground_image'],cmap='gray_r',vmin=0,vmax=1)
-        axes[1].set_title('Foreground evidence')
-        axes[2].imshow(registered:=assessed['registered_image'],cmap='gray_r',vmin=0,vmax=1)
+        shape=(*assessed['foreground_image'].shape,3)
+        axes[1].imshow(np.ones(shape)*[1,0,1],alpha=np.clip(assessed['unassigned_ink_map']/.2,0,.9))
+        axes[1].set_title('Magenta: unassigned components\nRole must be reviewed')
+        axes[2].imshow(registered:=assessed['body_registered_image'],cmap='gray_r',vmin=0,vmax=1)
         # Alpha amplification is display-only. Underlying NPZ maps stay absolute.
         shape=(*registered.shape,3)
-        axes[2].imshow(np.ones(shape)*[1,.25,0],alpha=np.clip(assessed['protrusion_map']/.2,0,.9))
-        axes[2].imshow(np.ones(shape)*[0,.6,1],alpha=np.clip(assessed['indentation_map']/.2,0,.9))
-        axes[2].set_title('Contour candidates (registered)\nOrange: convex / blue: concave')
+        axes[2].imshow(np.ones(shape)*[1,.25,0],alpha=np.clip(assessed['body_protrusion_map']/.2,0,.9))
+        axes[2].imshow(np.ones(shape)*[0,.6,1],alpha=np.clip(assessed['body_indentation_map']/.2,0,.9))
+        axes[2].set_title('Body contour (registered)\nOrange: convex / blue: concave')
         axes[3].text(.02,.96,
-            f"Raw source: {row['raw_source_score']:.1f}\nForeground structure: {row['foreground_structural_score']:.1f}\n"
-            f"Contour cap: {row['contour_score_cap']:.1f}\nExperimental total: {row['experimental_score']:.1f}\n\n"
-            'Prototype; not human-calibrated.\nReference-relative contour.\nNot differentiable guidance.',va='top',fontsize=10)
+            f"Body diagnostic: {row['body_diagnostic_score']:.1f}\nBody structure: {row['body_structural_score']:.1f}\n"
+            f"Body contour cap: {row['body_contour_score_cap']:.1f}\n"
+            f"Unassigned components: {row['unassigned_component_count']}\n"
+            f"Unassigned ink: {100*row['unassigned_ink_fraction']:.2f}%\n\n"
+            f"Strict full-crop prototype: {row['experimental_score']:.1f}\nRaw source: {row['raw_source_score']:.1f}\n\n"
+            'Body score excludes magenta ink.\nReview its role before acceptance.\nPrototype; not human-calibrated.',va='top',fontsize=9)
         for ax in axes:ax.axis('off')
         fig.suptitle(sample.get('label',''))
         fig.savefig(destination/f'sample_{index:04d}.png',dpi=140)
@@ -168,7 +226,8 @@ def compare_quality_v5(result, *, config=None, show=True):
         plt.close(fig)
     frame=pd.DataFrame(rows)
     frame.to_csv(destination/'quality_scores.csv',index=False,encoding='utf-8-sig')
-    report=dict(version='source_quality_v5_experimental',trained=False,human_calibrated=False,
+    report=dict(version='source_quality_v5_component_diagnostics',trained=False,human_calibrated=False,
+                body_score_scope='Excludes disconnected components outside expected support; role unverified',
                 differentiable=False,config=asdict(cfg),score_config=asdict(score_cfg),
                 source_config=asdict(source_cfg),results=rows,save_dir=str(destination))
     (destination/'quality_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
