@@ -183,7 +183,8 @@ def score_pilot(generation_report, checkpoint, *, score_config=None, source_conf
     rows = []
     for sample, measured in zip(extraction['results'], result['indicator']['results']):
         rows.append({key: sample.get(key) for key in
-                     ('manifest_row', 'char_id', 'label', 'control', 'strength', 'seed', 'safety_filtered')}
+                     ('manifest_row', 'char_id', 'label', 'control', 'strength', 'seed', 'safety_filtered',
+                      'page_id', 'glyph_count', 'slot', 'crop_bbox')}
                     | {key: measured[key] for key in ('structural_score', 'missing_score_cap',
                        'split_score_cap', 'junction_score_cap', 'extra_score_cap')})
     pd.DataFrame(rows).to_csv(root/'pilot_scores.csv', index=False, encoding='utf-8-sig')
@@ -194,4 +195,6 @@ def score_pilot(generation_report, checkpoint, *, score_config=None, source_conf
         for index, sample in enumerate(report['results']):
             raw = Path(sample['input'])
             archive.write(raw, f'generated_originals/{index:04d}.png')
+        for page in report.get('pages', []):
+            archive.write(page['input'], f'generated_sheets/{page["page_id"]:03d}.png')
     return result, pd.DataFrame(rows)

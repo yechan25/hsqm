@@ -1,5 +1,8 @@
 # A100 한 장으로 실행하는 한글 글자 확산 학습
 
+여러 글자를 한 장에 공동 생성하고 고정 좌표로 잘라 평가하려면
+[다중 글자 시험](MULTIGLYPH_PILOT.md)을 사용한다.
+
 별도 사전학습 모델로 실제 생성 이미지를 먼저 점수 시험하려면
 [확산 출력 점수 pilot](SCORE_PILOT.md)과 `notebooks/test_diffusion_scores.ipynb`를 사용한다.
 이는 아래의 새 DDPM 학습과 독립된 SD 1.5 img2img 실험이다.
