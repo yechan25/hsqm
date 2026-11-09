@@ -11,6 +11,8 @@ def _save(report,output,**metadata):
 
 
 def generate_first_stage(manifest,manifest_rows,checkpoint,output,**kwargs):
+    kwargs.setdefault("init_mode","noise")
+    if kwargs["init_mode"]!="noise":raise ValueError("First generation must start from prompt/noise; use a separate explicit benchmark for img2img")
     report=generate_guided_pair(manifest,manifest_rows,checkpoint,output,
         guidance=dict(noise_ratio=0,local_edit=False,max_new_local_ink=None),
         guidance_signal='template_structure',baseline_only=True,

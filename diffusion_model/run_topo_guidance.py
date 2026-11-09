@@ -35,7 +35,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
         appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False,
-        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65,baseline_only=False,preservation_weight=0.,objective_override=None):
+        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65,baseline_only=False,preservation_weight=0.,objective_override=None,slot_bboxes=None):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     if not np.isfinite(strength) or not 0<strength<=1:raise ValueError('strength must be in (0,1]')
     if not np.isfinite(preservation_weight) or preservation_weight<0:raise ValueError('Invalid preservation weight')
@@ -69,6 +69,13 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     focus=dict(focus_strength=2.,max_stroke_weight=3.)
     if stroke_focus is not None:focus.update(stroke_focus)
     initial_image,slots=compose_sheet([catalog[row] for row in selected],canvas_size)
+    if slot_bboxes is not None:
+        if len(slot_bboxes)!=len(slots):raise ValueError('One explicit bbox per intended character required')
+        for slot,box in zip(slots,slot_bboxes):
+            if len(box)!=4 or any(type(v) is not int for v in box):raise ValueError('Integer bboxes required')
+            x0,y0,x1,y1=box
+            if not (0<=x0<x1<=canvas_size and 0<=y0<y1<=canvas_size):raise ValueError('BBox outside generated image')
+            slot['bbox']=list(box)
     destination=Path(output)
     if destination.exists():raise FileExistsError(destination)
     model,size,epoch=load_topology(checkpoint,torch.device('cpu'))

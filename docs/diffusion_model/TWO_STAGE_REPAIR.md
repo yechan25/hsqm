@@ -1,3 +1,5 @@
+> 2026-11-09 수정: 아래의 외부 폰트 초기화 설명은 과거 대조 실험 기록이다. 현재 기본 실행은 [프롬프트 전용 첫 생성](PROMPT_THEN_REPAIR.md)이며 첫 생성에 이미지를 주지 않는다.
+
 # Two-stage generation and re-denoising
 
 Entry: notebooks/two_stage_repair.ipynb, built by notebooks/build_two_stage_repair.py.

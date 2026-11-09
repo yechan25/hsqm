@@ -396,8 +396,8 @@ class GuidedDDIMTests(unittest.TestCase):
                     self.assertTrue((root/'external/external_input.png').exists())
                     from diffusion_model.two_stage_repair import generate_first_stage,repair_generated_image
                     first=generate_first_stage(manifest,[1,2,3,4],checkpoint,root/'first',
-                        steps=8,canvas_size=48,init_mode='external',
-                        input_sheet=root/'run/page_001_baseline.png',strength=.65)
+                        steps=8,canvas_size=48,init_mode='noise',
+                        prompt_text='A photo with four Korean characters')
                     self.assertEqual({p['method'] for p in first['pages']},{'reference','baseline'})
                     self.assertEqual(first['baseline_accepted_steps'],0)
                     repaired=repair_generated_image(manifest,[1,2,3,4],checkpoint,
@@ -415,21 +415,24 @@ class GuidedDDIMTests(unittest.TestCase):
                     pixels=torch.ones(1,3,48,48);pixels[:,:,10:14,10:14]=0
                     edit=torch.zeros(1,1,48,48);edit[:,:,10:14,10:14]=1
                     slots=[dict(bbox=[x,y,x+24,y+24]) for y in (0,24) for x in (0,24)]
+                    slots[0]['bbox']=[1,2,23,23]
                     fixed=DetectedExtraGuidance(pixels,edit,slots)
                     Image.fromarray((pixels[0].permute(1,2,0).numpy()*255).astype(np.uint8)).save(root/'detected_source.png')
                     detected=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'detected',steps=8,
                         canvas_size=48,guidance_signal='localized_extra',init_mode='external',
                         input_sheet=root/'detected_source.png',strength=.5,objective_override=fixed,
+                        slot_bboxes=[s['bbox'] for s in slots],
                         guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=None,
                             start_fraction=0,end_fraction=1,every=1),compare_structure=False)
                     self.assertEqual(detected['editing_mode'],'fixed_detected_extra_map')
+                    self.assertEqual(detected['results'][0]['crop_bbox'],[1,2,23,23])
                     self.assertGreater(detected['guided_accepted_steps'],0)
                     self.assertLess(detected['structure_audit']['guided']['loss'],detected['structure_audit']['baseline']['loss'])
 
 
 
             self.assertEqual(report['status'],'complete')
-            self.assertEqual(pipe.encoder_calls,5)
+            self.assertEqual(pipe.encoder_calls,4)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
             self.assertEqual(len({p['initial_latent_sha256'] for p in report['pages']}),1)
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')

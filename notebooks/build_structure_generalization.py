@@ -15,7 +15,7 @@ def build():
 표준 글자 RGB와의 픽셀 손실·삭제 지도·정답 윤곽 맞추기는 보정에 사용하지 않습니다.
 이 지표는 기하 모멘트 기반 대리 지표이며 완전한 위상/문자 인식 지표가 아닙니다.
 
-기본은 INIT_MODE='external', strength=0.65: 다른 폰트로 같은 네 글자를 만들어 입력합니다.
+기본 INIT_MODE='noise': 첫 생성은 프롬프트와 잡음만 사용합니다. 이전 폰트 입력 기본값은 폐기했습니다.
 3번 셀에서 표준 글자 네 개를 선택하고 같은 문자를 순서대로 입력한 뒤 폰트를 선택하세요.
 이전 보정 실험과 같은 STEPS=100, strength=0.65, seed=100을 사용합니다(실제 역확산 65단계).
 잡음 생성은 INIT_MODE='noise'로 명시한 실험에만 사용합니다. SD1.5의 네 글자 생성은 보장되지 않습니다.
@@ -33,9 +33,9 @@ SD1.5가 네 글자를 만들지 못한 결과도 제외하지 않습니다. 템
     settings+="""
 # Separate experimental path; old pixel-control notebook is preserved.
 SEED=100  # Repeat with 101, 102, ...; keep all results
-INIT_MODE='external'  # noise is an optional separate stress test
+INIT_MODE='noise'  # First generation must not use an input glyph image
 STRENGTH=.65
-AUTO_FONT_INPUT=True
+AUTO_FONT_INPUT=False
 INPUT_SHEET=None
 GUIDANCE=dict(local_edit=False,clean_step_ratio=.01,start_fraction=.5,end_fraction=1.,
               every=1,backtracks=5,state_update='clean_residual',max_new_local_ink=None)
@@ -48,7 +48,10 @@ font_paths=sorted(Path('/usr/share/fonts/truetype/nanum').glob('*.ttf'))
 default_font=next((str(p) for p in font_paths if p.name=='NanumMyeongjo.ttf'),None)
 font_box=widgets.Dropdown(options=[(p.name,str(p)) for p in font_paths],value=default_font,description='입력 폰트:')
 prompt_box=widgets.Textarea(description='Prompt',value='Four large Korean Hangul characters in a 2 by 2 layout. Preserve each input character and its position. Black ink on plain white background. No additional text, tables, grid lines, captions or logos.',layout=widgets.Layout(width='95%',height='90px'))
-display(glyph_box,font_box,prompt_box)
+if INIT_MODE=='external' and AUTO_FONT_INPUT:
+    display(glyph_box,font_box,prompt_box)
+else:
+    display(glyph_box,prompt_box)
 """)
     put(4,"""
 from datetime import datetime
