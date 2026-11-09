@@ -22,8 +22,33 @@ def build():
 """)
     setup=''.join(original['cells'][1]['source'])
     setup='\n'.join(line for line in setup.splitlines() if 'apt-get' not in line)
-    setup=setup.replace('diffusers==0.35.1','git+https://github.com/huggingface/diffusers.git@8c54b38fea3d624d23d0e43c0c96037f080a79f9')
-    setup=setup.replace('transformers==4.49.0','transformers>=4.57,<5').replace("'accelerate',", "'accelerate', 'bitsandbytes>=0.48',")
+    install_start=setup.index("subprocess.run([sys.executable, '-m', 'pip'")
+    install_end=setup.index('sys.path.insert',install_start)
+    setup=setup[:install_start]+'''
+# Released Qwen img2img API; shared Hub constraint compatible with Transformers 4.x.
+import importlib.metadata as metadata
+packages=('diffusers','transformers','huggingface_hub','tokenizers','accelerate','bitsandbytes')
+loaded={name:metadata.version(name) for name in packages if name in sys.modules}
+requirements=root/'diffusion_model'/'requirements_qwen_colab.txt'
+install_log=root/'qwen_setup.log'
+command=[sys.executable,'-m','pip','install','--upgrade','--prefer-binary','-r',str(requirements)]
+with install_log.open('w',encoding='utf-8') as log:
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
+    for line in process.stdout:
+        print(line,end='',flush=True);log.write(line);log.flush()
+    returncode=process.wait()
+if returncode:
+    raise RuntimeError(f'pip 설치 실패. 위 ERROR 출력과 전체 로그를 확인하세요: {install_log}')
+changed=[name for name,version in loaded.items() if metadata.version(name)!=version]
+if changed:
+    raise RuntimeError(f'이미 로딩된 패키지가 변경됐습니다: {changed}. 런타임 > 세션 다시 시작 후 1번 셀부터 실행하세요.')
+versions={name:metadata.version(name) for name in packages}
+print('Installed versions:',versions)
+subprocess.run([sys.executable,'-c',
+    'from diffusers import QwenImagePipeline,QwenImageImg2ImgPipeline,QwenImageTransformer2DModel; '
+    'from transformers import Qwen2_5_VLForConditionalGeneration; '
+    'print("Qwen generation/repair imports: OK")'],check=True)
+''' +setup[install_end:]
     add('code',setup)
     add('code',"""
 from datetime import datetime

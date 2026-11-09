@@ -16,7 +16,7 @@ SD1.5용 DDIM 코드를 Qwen에 호출하지 않는다. diffusion_model/qwen_rep
 
 가이드 단계는 flow 예측으로 clean = sample - sigma × velocity를 계산한다. 기존 탐지기가 고정한 추가 획 지도와 주변 배경으로 만든 손실을 Qwen VAE 디코더를 통해 clean latent에 미분한다. Transformer 및 VAE 가중치는 동결한다. RMS 정규화한 gradient로 후보를 만들고 손실이 내려가는 경우만 채택한다. 다음 flow 상태에는 (1 - next_sigma) × clean_residual을 더한다. 이는 새 실험적 가이드 연결이며 품질 향상을 입증한 결과가 아니다. 최종 RGB를 직접 덮어쓰지 않는다. 기본 보정은 50 steps × strength .3으로 실제 15회이며, 단계별 loss와 clean 예측 중간 PNG를 저장한다. 저장 PNG는 중간 clean 예측이며 최종 출력은 네이티브 pipeline의 마지막 디코딩이다.
 
-설치는 Qwen img2img API가 있는 Diffusers 공식 커밋 8c54b38fea3d624d23d0e43c0c96037f080a79f9로 고정했다. [Qwen 모델 설명](https://huggingface.co/Qwen/Qwen-Image-2512), [네이티브 img2img 코드](https://github.com/huggingface/diffusers/blob/8c54b38fea3d624d23d0e43c0c96037f080a79f9/src/diffusers/pipelines/qwenimage/pipeline_qwenimage_img2img.py), [양자화 문서](https://huggingface.co/docs/diffusers/quantization/bitsandbytes)를 따른다.
+설치는 `diffusion_model/requirements_qwen_colab.txt`에서 diffusers 0.37.0, transformers 4.57.6, huggingface-hub 0.36.0으로 고정한다. 이전 Diffusers 개발 커밋은 Hub >=1.32를 요구하지만 Transformers 4.x는 Hub <1을 요구해서 동시에 설치할 수 없었다. 0.37.0 배포 wheel에 Qwen 생성/img2img API가 모두 있는지 확인했으며 Linux CPython 3.13 wheel 대상으로 전체 의존성 pip dry-run이 성공했다. 이는 실제 코랩 설치 및 GPU 추론 검증과 다르다. 첫 셀은 pip 출력을 그대로 표시하고 `qwen_setup.log`에 저장하며, 설치 후 별도 프로세스에서 실제 Qwen import도 검사한다. 이미 import한 패키지가 변경되면 세션 재시작을 요구한다. [Qwen 모델 설명](https://huggingface.co/Qwen/Qwen-Image-2512), [정식 배포판 img2img 코드](https://github.com/huggingface/diffusers/blob/v0.37.0/src/diffusers/pipelines/qwenimage/pipeline_qwenimage_img2img.py), [양자화 문서](https://huggingface.co/docs/diffusers/quantization/bitsandbytes)를 따른다.
 
 ## 실행
 

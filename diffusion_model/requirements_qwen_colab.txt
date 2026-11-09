@@ -1,0 +1,18 @@
+# Keep the shared Hub constraint compatible with Transformers 4.x.
+diffusers==0.37.0
+transformers==4.57.6
+huggingface-hub==0.36.0
+accelerate>=1.0,<2
+bitsandbytes>=0.48,<0.50
+safetensors
+timm
+pandas
+numpy
+tqdm
+matplotlib
+pillow
+scipy
+scikit-image
+pyyaml
+fonttools
+ipywidgets
