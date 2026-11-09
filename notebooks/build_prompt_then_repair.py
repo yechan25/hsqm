@@ -18,9 +18,12 @@ def build():
 실제 문자가 틀리거나 배치가 달라도 폰트 렌더링으로 바꾸거나 결과를 골라내지 않습니다.
 문자 위치를 고정 2×2로 가정하지 않습니다. 생성 결과에서 각 글자의 bbox를 지정해야 합니다.
 현재 오류 지도 보정은 밝은 단색 배경의 추가 잉크 삭제용입니다. 사진 배경이 복잡하면 명시적으로 중단하며, 폰트 이미지로 대체하지 않습니다.
+생성과 보정 모두 Qwen-Image-2512를 사용합니다. 코랩 A100 40GB 이상을 선택하세요. 4비트 양자화로 로딩하며 T4로 자동 대체하지 않습니다.
 """)
     setup=''.join(original['cells'][1]['source'])
     setup='\n'.join(line for line in setup.splitlines() if 'apt-get' not in line)
+    setup=setup.replace('diffusers==0.35.1','git+https://github.com/huggingface/diffusers.git@8c54b38fea3d624d23d0e43c0c96037f080a79f9')
+    setup=setup.replace('transformers==4.49.0','transformers>=4.57,<5').replace("'accelerate',", "'accelerate', 'bitsandbytes>=0.48',")
     add('code',setup)
     add('code',"""
 from datetime import datetime
@@ -29,18 +32,22 @@ from IPython.display import display
 import matplotlib.pyplot as plt
 from stroke_model.convert_reference_csv import existing_path
 from diffusion_model.prompt_generation import generate_prompt_image
+from diffusion_model.qwen_runtime import load_qwen_pipeline
 from huggingface_hub import model_info
 HSQM=existing_path('/content/drive/Shareddrives/2026 자율연구/HSQM')
-MODEL_ID='stable-diffusion-v1-5/stable-diffusion-v1-5'
+MODEL_ID='Qwen/Qwen-Image-2512'
 MODEL_REVISION=model_info(MODEL_ID).sha
-CANVAS_SIZE=576
+CANVAS_SIZE=1024
 PROMPT='A photograph of a white sign displaying the Korean text "가나다라" in black ink. Exactly these four Hangul characters in a single line. No other text.'
 EXPECTED_TEXT='가나다라'  # User intention, not rendered into an input image
 GENERATION_STEPS=50
 GENERATION_SEED=100
+NEGATIVE_PROMPT='extra text, multiple lines, columns, table, watermark, logo, border'
 RUN_DIR=HSQM/'prompt_then_repair'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+qwen_pipeline=load_qwen_pipeline(MODEL_ID,revision=MODEL_REVISION)
 first=generate_prompt_image(RUN_DIR/'stage1',prompt=PROMPT,
-    model_id=MODEL_ID,revision=MODEL_REVISION,steps=GENERATION_STEPS,seed=GENERATION_SEED,size=CANVAS_SIZE)
+    negative_prompt=NEGATIVE_PROMPT,model_id=MODEL_ID,revision=MODEL_REVISION,
+    steps=GENERATION_STEPS,seed=GENERATION_SEED,size=CANVAS_SIZE,pipeline=qwen_pipeline)
 FIRST_IMAGE=Path(first['generated_image'])
 fig,ax=plt.subplots(figsize=(7,7))
 with Image.open(FIRST_IMAGE) as im:ax.imshow(im.convert('RGB'))
@@ -49,6 +56,8 @@ print('First-stage image/template/font inputs:',first['input_image_used'],first[
 """)
     settings=''.join(original['cells'][2]['source'])
     settings='\n'.join(line for line in settings.splitlines() if not line.startswith(('FIRST_IMAGE=None','MODEL_ID =','CANVAS_SIZE =')))
+    settings=settings.replace('REPAIR_STEPS=100','REPAIR_STEPS=50').replace('REPAIR_STRENGTH=.2','REPAIR_STRENGTH=.3')
+    settings=settings[:settings.index('GUIDANCE=dict')]+settings[settings.index('if ERROR_CHECKPOINT is None:'):]
     choose=''.join(original['cells'][3]['source'])
     add('code',settings+'\n'+choose+"""
 characters_box.value=EXPECTED_TEXT
@@ -66,9 +75,20 @@ for slot,box in zip(slots,CHAR_BOXES):
     slot['bbox']=list(box)
 """)
     add('code',maps)
-    repair=''.join(original['cells'][5]['source']).replace("OUTPUT_DIR=HSQM/'detected_extra_diffusion'/datetime.now().strftime('%Y%m%d_%H%M%S_%f')", "OUTPUT_DIR=RUN_DIR/('repair_'+datetime.now().strftime('%H%M%S_%f'))")
-    repair=repair.replace('objective_override=fixed_objective,','objective_override=fixed_objective,slot_bboxes=CHAR_BOXES,')
-    repair=repair.replace('revision=model_info(MODEL_ID).sha','revision=MODEL_REVISION')
+    repair='''
+from diffusion_model.qwen_repair import repair_qwen_pair
+if hashlib.sha256(Path(FIRST_IMAGE).read_bytes()).hexdigest()!=SOURCE_SHA:raise RuntimeError('입력 이미지가 바뀌었습니다. 4번 셀부터 실행하세요.')
+extractor.cpu();head.cpu();torch.cuda.empty_cache()
+OUTPUT_DIR=RUN_DIR/('repair_'+datetime.now().strftime('%H%M%S_%f'))
+generation=repair_qwen_pair(qwen_pipeline,FIRST_IMAGE,OUTPUT_DIR,fixed_objective,
+    prompt=PROMPT,negative_prompt=NEGATIVE_PROMPT,seed=REPAIR_SEED,
+    steps=REPAIR_STEPS,strength=REPAIR_STRENGTH,step_size=.02,backtracks=5)
+np.savez_compressed(OUTPUT_DIR/'detector_plan.npz',probability=probability.cpu().numpy(),mask=fixed_objective.mask.cpu().numpy(),target=fixed_objective.target.cpu().numpy())
+(OUTPUT_DIR/'detector_info.json').write_text(json.dumps(dict(detector_info,checkpoint=str(ERROR_CHECKPOINT),threshold=THRESHOLD,source_sha256=SOURCE_SHA),indent=2))
+(OUTPUT_DIR/'git_commit.txt').write_text(commit)
+print('채택된 가이드 단계:',generation['guided_accepted_steps'])
+print('Qwen flow 단계별 loss:',generation['history'])
+'''
     add('code',repair)
     comparison=''.join(original['cells'][6]['source'])
     comparison=comparison.replace("OUTPUT_DIR.parent/(OUTPUT_DIR.name+'_detected_diffusion.zip')", "RUN_DIR.parent/(RUN_DIR.name+'_prompt_repair.zip')")

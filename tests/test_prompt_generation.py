@@ -15,7 +15,7 @@ class PromptOnlyTests(unittest.TestCase):
         class Pipeline:
             def __init__(self):self.calls=[]
             # Explicit signature prevents any accidental image/latent injection.
-            def __call__(self,*,prompt,negative_prompt,num_inference_steps,width,height,guidance_scale,generator):
+            def __call__(self,*,prompt,negative_prompt,num_inference_steps,width,height,true_cfg_scale,generator):
                 self.calls.append(dict(prompt=prompt,seed=generator.initial_seed(),steps=num_inference_steps))
                 return SimpleNamespace(images=[Image.new('RGB',(width,height),'white')],nsfw_content_detected=[False])
         workspace=Path(__file__).resolve().parents[1]/'outputs';workspace.mkdir(exist_ok=True)
@@ -46,7 +46,10 @@ class PromptOnlyTests(unittest.TestCase):
         all_code='\n'.join(''.join(c['source']) for c in data['cells'] if c['cell_type']=='code')
         self.assertNotIn('compose_font_input',all_code)
         self.assertNotIn("glob('*/stage1/page_001_baseline.png')",all_code)
-        self.assertIn('slot_bboxes=CHAR_BOXES',all_code)
+        self.assertIn("slot['bbox']=list(box)",all_code)
+        self.assertIn("MODEL_ID='Qwen/Qwen-Image-2512'",generation)
+        self.assertIn('repair_qwen_pair(',all_code)
+        self.assertNotIn('generation=generate_guided_pair(',all_code)
 
 
 if __name__=='__main__':unittest.main()
