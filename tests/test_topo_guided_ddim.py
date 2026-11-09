@@ -411,10 +411,25 @@ class GuidedDDIMTests(unittest.TestCase):
                     self.assertEqual(repaired['guidance_config']['max_state_change_to_base_step_ratio'],.25)
                     self.assertEqual(len({p['initial_latent_sha256'] for p in repaired['pages']}),1)
                     self.assertIn('preservation_loss',repaired['structure_audit']['guided'])
+                    from stroke_model.detected_extra_guidance import DetectedExtraGuidance
+                    pixels=torch.ones(1,3,48,48);pixels[:,:,10:14,10:14]=0
+                    edit=torch.zeros(1,1,48,48);edit[:,:,10:14,10:14]=1
+                    slots=[dict(bbox=[x,y,x+24,y+24]) for y in (0,24) for x in (0,24)]
+                    fixed=DetectedExtraGuidance(pixels,edit,slots)
+                    Image.fromarray((pixels[0].permute(1,2,0).numpy()*255).astype(np.uint8)).save(root/'detected_source.png')
+                    detected=generate_guided_pair(manifest,[1,2,3,4],checkpoint,root/'detected',steps=8,
+                        canvas_size=48,guidance_signal='localized_extra',init_mode='external',
+                        input_sheet=root/'detected_source.png',strength=.5,objective_override=fixed,
+                        guidance=dict(clean_step_ratio=.01,state_update='clean_residual',max_new_local_ink=None,
+                            start_fraction=0,end_fraction=1,every=1),compare_structure=False)
+                    self.assertEqual(detected['editing_mode'],'fixed_detected_extra_map')
+                    self.assertGreater(detected['guided_accepted_steps'],0)
+                    self.assertLess(detected['structure_audit']['guided']['loss'],detected['structure_audit']['baseline']['loss'])
+
 
 
             self.assertEqual(report['status'],'complete')
-            self.assertEqual(pipe.encoder_calls,4)
+            self.assertEqual(pipe.encoder_calls,5)
             self.assertEqual(report['seed'],100);self.assertEqual(report['strength'],.65)
             self.assertEqual(len({p['initial_latent_sha256'] for p in report['pages']}),1)
             self.assertEqual(checkpoint.read_bytes(),b'immutable mock checkpoint')

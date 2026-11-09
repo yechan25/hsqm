@@ -35,14 +35,16 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         guidance=None,structure_config=None,extra_weight=.05,stroke_focus=None,compare_uniform=False,
         appearance_weight=.5,appearance_config=None,compare_structure=True,
         appearance_target='extractor_reference',mask_gradient='ink_only',source_spill_weight=.5,direct_reference=False,
-        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65,baseline_only=False,preservation_weight=0.):
+        guidance_signal="pixel_control",init_mode="reference",input_sheet=None,prompt_text=None,seed=100,strength=.65,baseline_only=False,preservation_weight=0.,objective_override=None):
     if not torch.cuda.is_available():raise RuntimeError('Run this paired experiment on a Colab GPU')
     if not np.isfinite(strength) or not 0<strength<=1:raise ValueError('strength must be in (0,1]')
     if not np.isfinite(preservation_weight) or preservation_weight<0:raise ValueError('Invalid preservation weight')
     if preservation_weight and (guidance_signal!='template_structure' or init_mode!='external'):
         raise ValueError('Preservation requires template structure guidance from an external generated image')
     if type(seed) is not int or seed<0:raise ValueError('Nonnegative integer seed required')
-    if guidance_signal not in ('pixel_control','template_structure'):raise ValueError('Unknown guidance signal')
+    if guidance_signal not in ('pixel_control','template_structure','localized_extra'):raise ValueError('Unknown guidance signal')
+    if guidance_signal=='localized_extra' and (objective_override is None or init_mode!='external'):
+        raise ValueError('Localized repair requires an external generated image and fixed error-map objective')
     if init_mode not in ('reference','external','noise'):raise ValueError('Unknown initialization mode')
     if init_mode=='noise' and not prompt_text:raise ValueError('Explicit target prompt required for noise generation')
     if init_mode=='external' and input_sheet is None:raise ValueError('External input sheet required')
@@ -55,9 +57,9 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     config=(GuidanceConfig(**guidance) if isinstance(guidance,dict) else guidance or
             GuidanceConfig(clean_step_ratio=.01,end_fraction=1.,every=1,backtracks=5,
                            state_update='clean_residual',max_new_local_ink=.002))
-    if guidance_signal=='template_structure' and (config.local_edit or config.max_new_local_ink is not None):
+    if guidance_signal in ('template_structure','localized_extra') and (config.local_edit or config.max_new_local_ink is not None):
         raise ValueError('Template structure mode requires local_edit=False and max_new_local_ink=None')
-    if guidance_signal=='template_structure' and (compare_uniform or compare_structure):
+    if guidance_signal in ('template_structure','localized_extra') and (compare_uniform or compare_structure):
         raise ValueError('Use only baseline/guided in template structure mode')
     if appearance_target not in ('extractor_reference','partition_reference'):
         raise ValueError('Unknown appearance target mode')
@@ -112,10 +114,11 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
     # Keep its validation intact for modes that actually use it.
     objective=None;calibration=[]
     reference_rgb=torch.from_numpy(np.asarray(initial_image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
-    if guidance_signal=='template_structure':
+    if guidance_signal in ('template_structure','localized_extra'):
         from stroke_model.template_structure_guidance import TemplateStructureGuidance
         from stroke_model.source_ink_guard import SourceInkGuard
-        guiding_objective=TemplateStructureGuidance(model,slots).to(device).eval()
+        guiding_objective=(objective_override if guidance_signal=='localized_extra' else
+            TemplateStructureGuidance(model,slots)).to(device).eval()
         source_guard=SourceInkGuard(reference_rgb).to(device)
         if preservation_weight:
             from stroke_model.template_structure_guidance import PreserveGeneratedImage
@@ -139,7 +142,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         preservation_weight=preservation_weight,preservation_anchor="external_generated_input" if preservation_weight else None,
         reference_encoded_as_input=init_mode=='reference',
         external_input=str(input_sheet) if input_sheet else None,
-        pixel_audit_is_auxiliary=guidance_signal=='template_structure',
+        pixel_audit_is_auxiliary=guidance_signal in ('template_structure','localized_extra'),
         experiment='paired_joint_topo_backward_guidance',status='running',model_id=model_id,
         requested_revision=revision,checkpoint=str(checkpoint),checkpoint_sha256=checkpoint_hash,
         checkpoint_epoch=epoch,training_manifest=str(manifest),selected_manifest_rows=selected,
@@ -171,6 +174,12 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
             gradient_path='clean latent -> VAE -> ink with detached extractor ownership -> normalized descriptors',
             strength=None if init_mode=='noise' else strength)
 
+    if guidance_signal=='localized_extra':
+        report.update(editing_mode='fixed_detected_extra_map',primary_signal='predicted extra-ink mask; background from generated input',
+            primary_score='fixed-region edit loss',ownership_backward=False,
+            gradient_path='clean latent -> VAE -> fixed predicted-mask loss; no template similarity',
+            preservation_anchor='first_generated_input')
+
     def write_report():
         (destination/'generation_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
@@ -186,10 +195,10 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
         rgb=torch.from_numpy(np.asarray(image,np.float32).copy()/255).permute(2,0,1)[None].to(device)
         with torch.no_grad():
             source=source_guard(rgb)
-            if guidance_signal=='template_structure':
+            if guidance_signal in ('template_structure','localized_extra'):
                 value,detail=guiding_objective(rgb)
                 report.setdefault('structure_audit',{})[method]=dict(loss=float(value),
-                    per_glyph=[float(r['descriptor_loss']) for r in detail['per_glyph']],
+                    per_glyph=[float(r.get('descriptor_loss',r.get('edit_loss',0.))) for r in detail['per_glyph']],
                     structure_loss=float(detail.get('structure_loss',value)),
                     preservation_loss=float(detail.get('preservation_loss',0.)))
         source_map=source['local_excess'].detach().cpu()
