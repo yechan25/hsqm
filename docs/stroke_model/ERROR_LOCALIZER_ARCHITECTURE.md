@@ -59,7 +59,7 @@ L_detector = focal_BCE(gamma=2) + soft_Dice + 0.2 * kind_CE + 0.1 * presence_BCE
 
 LocalRepairProposal은 rgb, localizer features, error_probability를 받아 RGB residual을 예측한다. 특징과 확률은 detach하여 복원 손실이 탐지기를 바꾸거나 오류를 숨기지 못하게 한다. 출력 residual의 마지막 층을 0으로 초기화하므로 최초 출력은 정확히 원래 RGB다. 탐지기와 복원기를 따로 학습하는 첫 단계에 맞춘 구조다.
 
-proposal_loss = 손상 영역에서 같은 글씨체 clean RGB와의 L1 + identity_weight * 정상 영역에서 corrupted RGB와의 L1. valid=0은 제외한다. clean 이미지는 학습 감독에만 존재하며, LocalRepairProposal.forward 입력에는 없다. 합성 손상·같은 스타일의 쌍 데이터 생성기와 학습 실행기는 후속 작업이다.
+proposal_loss = 손상 영역에서 같은 글씨체 clean RGB와의 L1 + identity_weight * 정상 영역에서 corrupted RGB와의 L1. valid=0은 제외한다. clean 이미지는 학습 감독에만 존재하며, LocalRepairProposal.forward 입력에는 없다. 합성 손상 데이터와 오류 탐지기 학습 실행기는 [학습 코랩](TRAIN_ERROR_LOCALIZER.md)에 추가했다. 복원 제안기 학습은 아직 후속 작업이다.
 
 FixedRepairPlan은 현재 생성 이미지·예측 수정안·외부에서 검증한 edit mask를 clone+detach해 고정한다. 생성된 RGB 후보에 대해 편집 영역 smooth L1과 비편집 영역 보존 smooth L1을 각각 면적으로 정규화한다. decoder RGB를 clamp하지 않아 범위 밖 값에도 수정 gradient가 남는다. 이 클래스는 아직 기존 sampler에 맞춘 adapter/실행 경로에 연결하지 않았다.
 
@@ -74,4 +74,4 @@ composite 메서드는 명시적인 최종 RGB 합성용이다. mask=0 영역은
 5. Gate A를 통과한 뒤 LocalRepairProposal을 별도로 학습한다. 탐지 입력은 GT/예측 두 조건을 비교한다.
 6. Gate B를 통과한 뒤 FixedRepairPlan을 재역확산에 연결한다. 무보정/재역확산만/수정안만/수정안+확산을 비교한다.
 
-자동 데이터 생성, trainer/optimizer loop, checkpoint calibration metadata, OCR, 사진 ROI 검출, 누락·끊김 복원, diffusion adapter는 아직 구현하지 않았다. 이번 구현은 이 기능들의 성능을 대신하지 않는다.
+합성 extra 데이터 생성과 탐지기 trainer/optimizer loop는 구현했다. checkpoint에는 threshold_calibrated=False를 기록한다. 실제 confidence calibration, OCR, 사진 ROI 검출, 누락·끊김 복원, 복원 제안기 학습, diffusion adapter는 아직 구현하지 않았다. 이번 구현은 이 기능들의 성능을 대신하지 않는다.

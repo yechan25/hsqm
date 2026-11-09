@@ -164,7 +164,7 @@ T는 네트워크가 현재 입력에서 예측한 국소 수정안이며, 저�
 
 ## 9. 첫 구현의 구체 범위와 순서
 
-- 구현한 파일: stroke_model/error_localizer.py, stroke_model/local_repair_proposal.py. 상세 입출력과 범위는 [코드 아키텍처](ERROR_LOCALIZER_ARCHITECTURE.md)를 참고한다. error_synthesis.py 및 train_error_localizer.py는 아직 만들지 않았다.
+- 구현한 파일: stroke_model/error_localizer.py, stroke_model/local_repair_proposal.py. 상세 입출력과 범위는 [코드 아키텍처](ERROR_LOCALIZER_ARCHITECTURE.md)를 참고한다. error_synthesis.py 및 train_error_localizer.py를 추가했고 [Gate A 학습 코랩](TRAIN_ERROR_LOCALIZER.md)에서 실행할 수 있다.
 - v1-A: 동결 추출기 결과를 캐시하고 부착 추가 획/분리 잡획 탐지기만 학습한다. 실제 baseline의 획 추출 그림도 함께 저장해 소속 오류와 탐지 오류를 구분한다.
 - v1-B: 글씨체가 같은 학습 쌍으로 국소 삭제/배경 복원 제안기를 학습한다. 새 서체/문자/실제 생성물에 대해 Gate A/B를 통과한다.
 - v1-C: 기존 two_stage_repair의 전체 모멘트 손실을 새 국소 편집 목표로 교체하고 Gate C를 수행한다. 현재 노트북을 새 모델 성능처럼 표시하지 않는다.
