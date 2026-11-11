@@ -60,9 +60,9 @@ def prepare_groups(manifest, selections, output):
     return groups
 
 
-def generate_cases(groups, *, strengths=(.45, .65, .85), seeds=(100, 101),
+def generate_cases(groups, *, strengths=(.65,), seeds=(100,),
                    steps=100, canvas_size=576, model_id='stable-diffusion-v1-5/stable-diffusion-v1-5',
-                   revision=None, pipeline=None, include_control=True):
+                   revision=None, pipeline=None, include_control=False):
     cases = []
     for group in groups:
         root = Path(group['root'])
@@ -84,6 +84,12 @@ def generate_cases(groups, *, strengths=(.45, .65, .85), seeds=(100, 101),
                 prompt=report.get('prompts', {}).get('4', ''), negative_prompt=report.get('negative_prompt', ''),
                 output=str(root/case_id), status='generated'))
     return cases
+
+
+def validate_generation_cases(cases, *, seed, strength):
+    """Changing a generation seed/strength requires fresh stage-1 images."""
+    if not cases or any(c['control'] or c['seed'] != seed or c['strength'] != strength for c in cases):
+        raise ValueError('생성 조건이 다릅니다. 4번 셀에서 해당 seed/strength로 새로 생성한 뒤 5번을 실행하세요.')
 
 
 def fit_case(case, extractor):

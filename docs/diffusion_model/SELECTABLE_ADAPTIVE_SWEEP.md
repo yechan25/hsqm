@@ -21,9 +21,11 @@ Run `notebooks/selectable_adaptive_sweep.ipynb` on L4, cells 1–5:
    and inspect the 2x2 preview. For multiple groups, register each using the add
    button; otherwise cell 4 uses the currently selected four. Numeric file IDs
    are not guessed to be Hangul character names. Unknown labels stay unknown.
-4. Generate the whole four-glyph sheet independently for every strength×seed.
-   Defaults .45/.65/.85 × 100/101 yield six generated cases plus a clean control
-   per group. This is reference-initialized img2img, not prompt-only generation.
+4. Generate one whole four-glyph sheet per selected group with the original
+   condition: seed 100, strength .65. No strength/seed sweep or control repair is
+   run by default. To try a different seed/strength, change the single values in
+   cell 4 and rerun generation, then cell 5. This is reference-initialized img2img,
+   not prompt-only generation.
    Safety-filtered, missing, displaced or very damaged outputs are not removed.
 5. For every case: use the extractor, fit canonical strokes using original hints,
    construct its candidate, then run paired re-denoising/adaptive repair with the
@@ -38,7 +40,10 @@ generation and repair parameters, model revision and frozen runtime hashes are
 recorded. Re-running cell 5 creates a new attempt subfolder while reusing the
 same generated inputs. It does not silently overwrite prior repair outputs.
 
-REPAIR_CASE_IDS=None processes every generated case including the normal control.
+REPAIR_CASE_IDS=None processes the one generated case per selected character group.
+Cell 5 checks the recorded generation conditions; changing seed/strength cannot
+silently reuse an old generated image. Repair noise remains seed 2026, strength
+.25, separately from stage-1 generation seed 100/strength .65.
 An explicit ID subset is allowed but is user selection and not automatic success
 filtering. Failed fits/repairs remain in all_results.json and the comparison grid.
 Partial generation failures have generation_failure.json and retain pages already

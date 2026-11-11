@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 import torch
 
-from diffusion_model.selectable_adaptive_sweep import prepare_groups, generate_cases, repair_cases, select_entries, ADAPTIVE_COMMIT
+from diffusion_model.selectable_adaptive_sweep import prepare_groups, generate_cases, repair_cases, select_entries, validate_generation_cases, ADAPTIVE_COMMIT
 
 
 def catalog(root):
@@ -56,7 +56,7 @@ class SelectableTests(unittest.TestCase):
             root=Path(directory);manifest=catalog(root)
             groups=prepare_groups(manifest,[[1,2,3,4],[5,6,7,8]],root/'runs')
             pipe=Pipeline()
-            cases=generate_cases(groups,strengths=(.45,.65),seeds=(100,101),steps=10,canvas_size=64,pipeline=pipe)
+            cases=generate_cases(groups,strengths=(.45,.65),seeds=(100,101),steps=10,canvas_size=64,pipeline=pipe,include_control=True)
             self.assertEqual(len(cases),10)
             self.assertEqual(len(pipe.calls),8)
             self.assertEqual(sum(c['control'] for c in cases),2)
@@ -71,14 +71,14 @@ class SelectableTests(unittest.TestCase):
             root=Path(directory);groups=prepare_groups(catalog(root),[[1,2,3,4]],root/'runs')
             class Broken(Pipeline):
                 def __call__(self,**kwargs):raise RuntimeError('generation failed')
-            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Broken())
+            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Broken(),include_control=True)
             self.assertEqual(len(cases),1)  # The normal input control survives.
             self.assertTrue((Path(groups[0]['root'])/'generation_failure.json').is_file())
 
     def test_each_case_is_fitted_and_repaired_without_modifying_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);groups=prepare_groups(catalog(root),[[1,2,3,4]],root/'runs')
-            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Pipeline())
+            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Pipeline(),include_control=True)
             before=[Path(c['input']).read_bytes() for c in cases]
             calls=[]
             def fake_run(source,candidate,metadata,output,**kwargs):
@@ -98,7 +98,7 @@ class SelectableTests(unittest.TestCase):
     def test_repair_failure_remains_in_summary_and_other_cases_continue(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);groups=prepare_groups(catalog(root),[[1,2,3,4]],root/'runs')
-            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Pipeline())
+            cases=generate_cases(groups,strengths=(.65,),seeds=(100,),steps=10,canvas_size=64,pipeline=Pipeline(),include_control=True)
             with patch('diffusion_model.selectable_adaptive_sweep.fit_case',side_effect=RuntimeError('fit failed')):
                 rows=repair_cases(cases,Extractor(),checkpoint_sha256='exact',revision='revision')
             self.assertEqual(len(rows),2)
@@ -121,8 +121,24 @@ class SelectableTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(actual).hexdigest(),expected)
         self.assertNotIn('check_proposal',values['RUNTIME_HELPERS']['diffusion_model/fitted_candidate_diffusion.py'])
         self.assertIn('selectors=',code[2]);self.assertIn('SELECTED_GROUPS',code[2])
-        self.assertIn('STRENGTHS=(.45,.65,.85)',code[3])
+        self.assertIn('GENERATION_STRENGTH=.65',code[3])
+        self.assertIn('GENERATION_SEED=100',code[3])
+        self.assertIn('include_control=False',code[3])
+        self.assertNotIn('STRENGTHS=',code[3])
+        self.assertIn('validate_generation_cases(CASES',code[4])
         self.assertIn('REPAIR_CASE_IDS=None',code[4])
+
+    def test_default_is_one_original_condition_and_other_seed_requires_new_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);groups=prepare_groups(catalog(root),[[1,2,3,4]],root/'runs')
+            pipe=Pipeline();cases=generate_cases(groups,steps=10,canvas_size=64,pipeline=pipe)
+            self.assertEqual(len(pipe.calls),1)
+            self.assertEqual(len(cases),1)
+            self.assertFalse(cases[0]['control'])
+            self.assertEqual((cases[0]['seed'],cases[0]['strength']),(100,.65))
+            validate_generation_cases(cases,seed=100,strength=.65)
+            with self.assertRaises(ValueError):validate_generation_cases(cases,seed=101,strength=.65)
+            with self.assertRaises(ValueError):validate_generation_cases(cases,seed=100,strength=.85)
 
 
 if __name__=='__main__':unittest.main()

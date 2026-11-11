@@ -29,7 +29,8 @@ def build():
 
 **보정 코드는 안정화판 직전 d74e26e로 고정했습니다.** 새로운 거절/최종 선택/원본 대체 기능은 없습니다.
 L4에서 1→2→3→4→5 실행. 3번에서 실제 글자 그림을 보고 네 칸을 선택합니다.
-한 조합만 선택해도 강도 .45/.65/.85 × seed 100/101의 6가지 생성물과 정상 대조군을 처리합니다.
+각 조합은 원래 조건인 seed 100 · strength .65로 한 장만 생성하고 그 이미지 한 장만 보정합니다.
+정상 대조군과 다른 seed/강도를 자동으로 보정하지 않습니다. 다른 seed는 4번부터 새로 생성하세요.
 여러 조합을 추가할 수도 있습니다. 모든 생성은 같은 기준 이미지에서 독립적으로 시작합니다.
 이 실험은 선택한 기준 글자 4개를 img2img로 변형하는 통제 실험이며 프롬프트만으로 생성하는 시험이 아닙니다.
 
@@ -65,7 +66,7 @@ from stroke_model.adaptive_ink_constraints import checkpoint_hash
 from stroke_model.reference_model import ReferenceStrokeModel
 from diffusion_model.pilot_data import prepare_pilot_data
 from diffusion_model.score_pilot import training_catalog,load_catalog_reference
-from diffusion_model.selectable_adaptive_sweep import select_entries,prepare_groups,generate_cases,repair_cases
+from diffusion_model.selectable_adaptive_sweep import select_entries,prepare_groups,generate_cases,repair_cases,validate_generation_cases
 if not torch.cuda.is_available():raise RuntimeError('런타임에서 L4 GPU를 선택하세요.')
 print('GPU:',torch.cuda.get_device_name(0),'| 보정 버전:',ADAPTIVE_COMMIT)
 ''')
@@ -156,10 +157,9 @@ draw_gallery();draw_selected()
 print('한 조합만 시험하려면 네 칸을 고른 뒤 바로 4번 실행. 여러 조합은 추가 버튼으로 등록하세요.')
 ''')
     add('code','''from diffusers import StableDiffusionImg2ImgPipeline,DDIMScheduler
-STRENGTHS=(.45,.65,.85)
-SEEDS=(100,101)
+GENERATION_STRENGTH=.65
+GENERATION_SEED=100
 GENERATION_STEPS=100
-INCLUDE_CLEAN_CONTROL=True
 MODEL_ID='stable-diffusion-v1-5/stable-diffusion-v1-5'
 REVISION='451f4fe16113bff5a5d2269ed5ad43b0592e9a14'  # 이전 실험과 같은 확산 모델 revision
 OUTPUT=Path('/content')/('selectable_adaptive_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
@@ -169,15 +169,15 @@ for group in GROUPS:
     for entry in training_catalog(group['manifest']):
         ref,strokes=load_catalog_reference(entry)
         if ref.shape[-2:]!=(MODEL_SIZE,MODEL_SIZE):raise ValueError('선택한 기준 글자와 모델 해상도가 다릅니다.')
-print('실제 생성 조합:',selections,'| 강도:',STRENGTHS,'| seed:',SEEDS)
+print('실제 생성 조합:',selections,'| 강도:',GENERATION_STRENGTH,'| seed:',GENERATION_SEED)
 extractor.cpu();gc.collect();torch.cuda.empty_cache()
 generation_pipe=StableDiffusionImg2ImgPipeline.from_pretrained(MODEL_ID,revision=REVISION,
     torch_dtype=torch.float16,use_safetensors=True)
 generation_pipe.scheduler=DDIMScheduler.from_config(generation_pipe.scheduler.config)
 generation_pipe.enable_attention_slicing();generation_pipe.to('cuda')
 try:
-    CASES=generate_cases(GROUPS,strengths=STRENGTHS,seeds=SEEDS,steps=GENERATION_STEPS,
-        revision=REVISION,pipeline=generation_pipe,include_control=INCLUDE_CLEAN_CONTROL)
+    CASES=generate_cases(GROUPS,strengths=(GENERATION_STRENGTH,),seeds=(GENERATION_SEED,),steps=GENERATION_STEPS,
+        revision=REVISION,pipeline=generation_pipe,include_control=False)
 finally:
     del generation_pipe;gc.collect();torch.cuda.empty_cache()
 for group in GROUPS:
@@ -186,7 +186,7 @@ for group in GROUPS:
 (OUTPUT/'cases.json').write_text(json.dumps(CASES,ensure_ascii=False,indent=2),encoding='utf-8')
 (OUTPUT/'experiment.json').write_text(json.dumps(dict(adaptive_commit=ADAPTIVE_COMMIT,
     pinned_source_hashes=PINNED_HASHES,checkpoint_sha256=EXPECTED_SHA,selections=selections,
-    generation_strengths=STRENGTHS,generation_seeds=SEEDS,generation_steps=GENERATION_STEPS,
+    generation_strength=GENERATION_STRENGTH,generation_seed=GENERATION_SEED,generation_steps=GENERATION_STEPS,
     model_id=MODEL_ID,revision=REVISION,free_text_generation=False,
     reference_initialized_generation=True,data_preparation=preparation),ensure_ascii=False,indent=2),encoding='utf-8')
 if not CASES:raise RuntimeError('생성된 사례가 없습니다. generation_failure.json을 확인하세요.')
@@ -195,13 +195,14 @@ for ax in axes.flat:ax.axis('off')
 for ax,case in zip(axes.flat,CASES):
     ax.imshow(Image.open(case['input']));ax.set_title(case['case_id']+'\\n'+case['label'])
 fig.tight_layout();fig.savefig(OUTPUT/'generation_gallery.png',dpi=100);plt.show();plt.close(fig)
-print('생성 사례:',len(CASES),'개. 다음 셀은 기본적으로 모두 보정합니다.')
+print('생성 사례:',len(CASES),'개 — 각 글자 조합당 한 장만 보정합니다. 다른 seed는 이 셀부터 다시 실행하세요.')
 ''')
     add('code','''# None이면 모든 사례. 특정 경우만 시험하려면 위에 표시된 case_id 목록을 지정하세요.
 REPAIR_CASE_IDS=None
 REPAIR_STEPS=60
 REPAIR_STRENGTH=.25
 REPAIR_SEED=2026
+validate_generation_cases(CASES,seed=GENERATION_SEED,strength=GENERATION_STRENGTH)
 selected_cases=CASES if REPAIR_CASE_IDS is None else [c for c in CASES if c['case_id'] in REPAIR_CASE_IDS]
 if REPAIR_CASE_IDS is not None and set(REPAIR_CASE_IDS)!={c['case_id'] for c in selected_cases}:
     raise ValueError('REPAIR_CASE_IDS에 없는 case_id가 있습니다.')
