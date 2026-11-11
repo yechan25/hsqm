@@ -114,7 +114,8 @@ def fit_case(case, extractor):
         hints = prediction.get('hints', strokes)[0].cpu().numpy()
         result = fit_reference_glyph(slot['strokes'], masks, hints=hints, glyph_reference=slot['reference'],
             config=ReferenceFitConfig(max_displacement=16., smoothness=12., shape_prior=.15, max_junction_shift=2.))
-        records.append(dict(reference=slot['reference'], strokes=slot['strokes'], fitted=result['strokes']))
+        records.append(dict(reference=slot['reference'], strokes=slot['strokes'], fitted=result['strokes'],
+            extracted_masks=masks,fit_metadata=[r['metadata'] for r in result['fits']]))
         np.savez_compressed(out/f'warped_slot_{i+1}.npz', warped_strokes=result['strokes'],
                             reference_strokes=slot['strokes'], extracted_masks=masks,
                             probabilities=prediction['probabilities'][0].cpu().numpy(), model_hints=hints)
