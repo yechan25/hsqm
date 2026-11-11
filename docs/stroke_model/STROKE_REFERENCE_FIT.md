@@ -2,6 +2,8 @@
 
 [Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/stroke_reference_fit.ipynb)에서 L4로 1→2→3번을 실행한다. 역확산은 수행하지 않는다. 새 모델을 학습하지 않으며 기존 best.pt의 softmax/마스크/flow hints를 추론에 사용한다.
 
+여러 강도·seed로 새로운 img2img 생성물을 만들고 전부 비교하려면 [생성 셀이 추가된 4셀 확장판](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/stroke_reference_fit_sweep.ipynb)을 사용한다. 이 확장판의 첫 생성은 네 기준 이미지를 초기 입력으로 주는 통제 실험이다.
+
 1번은 Drive를 연결하고 기존 오류 이미지 baseline, 당시 기준 획, 정확히 대응하는 checkpoint를 불러온다. 기존 생성 실험 폴더에서 복원하거나 guidance_debug (4).zip을 사용한다. SHA256 대응 검사를 유지한다. 자료는 /content로 복사해 처리하고 마지막 ZIP을 Drive의 HSQM/stroke_reference_fit_results에 저장한다.
 
 2번은 네 글자에서 획별 softmax, 잉크 마스크, 모델이 flow로 변형한 기준 획 hints를 저장하고 표시한다. checkpoint가 hints를 제공하지 않으면 원래 기준 획으로 시작했다는 플래그를 저장한다. 이미지 해상도/마스크 형태는 기존 추출 모델의 128 좌표를 사용한다.
