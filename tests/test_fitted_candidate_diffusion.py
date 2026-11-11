@@ -11,7 +11,7 @@ from unittest.mock import patch
 import torch
 from PIL import Image
 
-from diffusion_model.fitted_candidate_diffusion import CandidateObjective, load_case, optimize_clean, run_pair
+from diffusion_model.fitted_candidate_diffusion import CandidateObjective, InkConstraintObjective, load_case, optimize_clean, run_pair
 
 
 class FittedCandidateTests(unittest.TestCase):
@@ -116,20 +116,41 @@ class FittedCandidateTests(unittest.TestCase):
              patch('torch.cuda.empty_cache'), \
              patch('diffusion_model.fitted_candidate_diffusion.image_tensor',
                    side_effect=lambda image, device: image_tensor(image, 'cpu')):
-            for mode, name in [('candidate', 'candidate_guided'), ('ink_constraints', 'ink_guided')]:
+            class Dynamic(InkConstraintObjective):
+                def __init__(self, source, candidate):
+                    super().__init__(source, candidate)
+                    self.history = []
+                    self.evaluations = 0
+                def maybe_refresh(self, image, step):
+                    row = dict(step=step, erase_pixels=int((self.erase > 0).sum()))
+                    self.history.append(row)
+                    return row
+                def evaluate_fixed(self, image):
+                    self.evaluations += 1
+                    return self(image)
+                def export_state(self, path):
+                    import numpy as np
+                    np.savez(path, identity=np.arange(2))
+            for mode, name in [('candidate', 'candidate_guided'), ('ink_constraints', 'ink_guided'), ('adaptive_ink', 'adaptive_guided')]:
                 with self.subTest(mode=mode):
                     calls.clear()
                     out = Path(directory)/mode
                     target = Image.new('RGB', (16, 16), 'white')
-                    if mode == 'ink_constraints':
+                    if mode != 'candidate':
                         target.paste((0, 0, 0), (12, 2, 15, 14))
-                    report = run_pair(Image.new('RGB', (16, 16), 'gray'), target,
-                                      {}, out, steps=4, strength=.5, guidance_mode=mode)
+                    source = Image.new('RGB', (16, 16), 'gray')
+                    dynamic = Dynamic(image_tensor(source, 'cpu'), image_tensor(target, 'cpu')) if mode == 'adaptive_ink' else None
+                    report = run_pair(source, target, {}, out, steps=4, strength=.5,
+                                      guidance_mode=mode, objective_override=dynamic)
                     self.assertTrue(torch.equal(calls[0][1], calls[2][1]))
                     self.assertTrue(report['paired_initial_latent'])
                     self.assertGreater(report['traces'][name][-1]['accepted_inner_steps'], 0)
                     self.assertLess(report['metrics'][name]['loss'], report['metrics']['redenoise_only']['loss'])
                     self.assertNotEqual((out/(name+'.png')).read_bytes(), (out/'fitted_candidate.png').read_bytes())
+                    if dynamic is not None:
+                        self.assertEqual(dynamic.evaluations, 3)  # Both arms + input, one fixed evaluator.
+                        self.assertEqual(len(report['constraint_history']), 1)
+                        self.assertTrue((out/'ownership_step_001.npz').is_file())
 
 
 if __name__ == '__main__':

@@ -190,7 +190,7 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
 def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
              seed=2026, cfg_scale=5., inner_steps=4, step_ratio=.02,
              model_id='stable-diffusion-v1-5/stable-diffusion-v1-5', revision=None,
-             progress=None, guidance_mode='candidate', constraint_config=None):
+             progress=None, guidance_mode='candidate', constraint_config=None, objective_override=None):
     """Identical source VAE encoding, noise, prompt, scheduler in both arms."""
     if not torch.cuda.is_available():
         raise RuntimeError('Select an L4 GPU runtime in Colab')
@@ -198,8 +198,10 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         raise ValueError('Need at least two actual re-denoising steps')
     if inner_steps < 1 or step_ratio <= 0 or cfg_scale <= 1:
         raise ValueError('Invalid guidance configuration')
-    if guidance_mode not in ('candidate', 'ink_constraints'):
+    if guidance_mode not in ('candidate', 'ink_constraints', 'adaptive_ink'):
         raise ValueError('Unknown guidance mode')
+    if (guidance_mode == 'adaptive_ink') != (objective_override is not None):
+        raise ValueError('Adaptive mode requires an explicitly prepared stroke objective')
     from diffusers import StableDiffusionImg2ImgPipeline, DDIMScheduler
     from copy import deepcopy
     out = Path(output)
@@ -237,14 +239,19 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
             array = decode(z)[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         Image.fromarray(np.rint(array*255).astype('uint8')).save(path)
     source_rgb, candidate_rgb = image_tensor(source, 'cuda'), image_tensor(candidate, 'cuda')
-    objective = (InkConstraintObjective(source_rgb, candidate_rgb, **(constraint_config or {}))
+    if objective_override is not None and (objective_override.source.shape != source_rgb.shape or
+            not torch.allclose(objective_override.source, source_rgb, atol=1e-6)):
+        raise ValueError('Adaptive objective must be prepared from this exact original input')
+    objective = objective_override if objective_override is not None else (InkConstraintObjective(source_rgb, candidate_rgb, **(constraint_config or {}))
                  if guidance_mode == 'ink_constraints' else CandidateObjective(source_rgb, candidate_rgb))
     Image.fromarray((objective.edit[0, 0].cpu().numpy()*255).astype('uint8')).save(out/'edit_region.png')
-    if guidance_mode == 'ink_constraints':
+    if guidance_mode in ('ink_constraints', 'adaptive_ink'):
         for name in ('erase', 'restore', 'preserve'):
             Image.fromarray(np.rint(getattr(objective, name)[0, 0].cpu().numpy()*255).astype('uint8')).save(out/f'{name}_region.png')
         (out/'constraints.json').write_text(json.dumps(objective.metadata, indent=2), encoding='utf-8')
-    guided_name = 'ink_guided' if guidance_mode == 'ink_constraints' else 'candidate_guided'
+    guided_name = {'candidate': 'candidate_guided', 'ink_constraints': 'ink_guided', 'adaptive_ink': 'adaptive_guided'}[guidance_mode]
+    if hasattr(objective, 'export_state'):
+        objective.export_state(out/'ownership_initial.npz')
     traces, metrics = {}, {}
     for method in ('redenoise_only', guided_name):
         scheduler = deepcopy(pipe.scheduler)
@@ -261,6 +268,16 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
             latent = base.prev_sample.detach()
             clean = base.pred_original_sample.detach()
             if method == guided_name and i/max(len(timesteps)-1, 1) >= .2:
+                if hasattr(objective, 'maybe_refresh'):
+                    with torch.no_grad():
+                        refresh = objective.maybe_refresh(decode(clean), i)
+                    if refresh is not None:
+                        record['constraint_refresh'] = refresh
+                        for name in ('erase', 'restore'):
+                            mask = getattr(objective, name)[0, 0].detach().cpu().numpy()
+                            Image.fromarray(np.rint(mask*255).clip(0, 255).astype('uint8')).save(out/f'{name}_step_{i:03d}.png')
+                        if hasattr(objective, 'export_state'):
+                            objective.export_state(out/f'ownership_step_{i:03d}.npz')
                 clean, result = optimize_clean(clean, decode, objective,
                     iterations=inner_steps if i < len(timesteps)-1 else inner_steps*2,
                     step_ratio=step_ratio)
@@ -279,11 +296,12 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
                 progress(method, i+1, len(timesteps), record)
         save_image(latent, out/f'{method}.png')
         with torch.no_grad():
-            loss, values = objective(decode(latent))
+            evaluate = getattr(objective, 'evaluate_fixed', objective)
+            loss, values = evaluate(decode(latent))
         metrics[method] = dict(loss=float(loss), **values)
         traces[method] = trace
     with torch.no_grad():
-        loss, values = objective(objective.source)
+        loss, values = getattr(objective, 'evaluate_fixed', objective)(objective.source)
     metrics['input'] = dict(loss=float(loss), **values)
     report = dict(metadata=metadata, model_id=model_id, revision=revision,
         steps=steps, actual_steps=len(timesteps), strength=strength, seed=seed,
@@ -291,9 +309,10 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
         paired_initial_latent=True, guidance_target=guidance_mode,
         constraints=getattr(objective, 'metadata', None),
+        constraint_history=getattr(objective, 'history', None),
         target_pixels_pasted_into_output=False, metrics=metrics, traces=traces,
         metric_note=('Fixed ink constraints and source preservation; not GT accuracy or HSQM score'
-                     if guidance_mode == 'ink_constraints' else 'Candidate agreement, not ground-truth accuracy or HSQM score'))
+                     if guidance_mode in ('ink_constraints', 'adaptive_ink') else 'Candidate agreement, not ground-truth accuracy or HSQM score'))
     (out/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     del pipe
     torch.cuda.empty_cache()
