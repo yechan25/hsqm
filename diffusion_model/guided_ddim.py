@@ -33,8 +33,15 @@ class GuidanceConfig:
     local_erase_l1_weight: float=0.
     local_erase_tail_weight: float=0.
     max_state_change_to_base_step_ratio: float | None=None
+    inner_iterations: int=1
+    final_inner_iterations: int=1
+    max_clean_change_ratio: float=.08
 
     def __post_init__(self):
+        if (type(self.inner_iterations) is not int or self.inner_iterations<1 or
+                type(self.final_inner_iterations) is not int or self.final_inner_iterations<1 or
+                not math.isfinite(self.max_clean_change_ratio) or self.max_clean_change_ratio<=0):
+            raise ValueError('Invalid iterative guidance budget')
         if (self.max_state_change_to_base_step_ratio is not None and
                 (not math.isfinite(self.max_state_change_to_base_step_ratio) or
                  self.max_state_change_to_base_step_ratio<=0 or self.state_update!='clean_residual' or self.local_edit)):
@@ -111,6 +118,7 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
     latent=initial.detach().float().clone()
     unet_dtype=next(pipe.unet.parameters()).dtype
     trace=[];ink_anchor=None;editor=None
+    if not enabled and hasattr(objective,'begin_baseline'):objective.begin_baseline()
     for index,t in enumerate(timesteps):
         with torch.no_grad():
             inputs=torch.cat([latent,latent]) if cfg_scale>1 else latent
@@ -121,13 +129,31 @@ def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_s
                 predicted=uncond+cfg_scale*(text-uncond)
             predicted=predicted.float()
             original=scheduler.step(predicted,t,latent,eta=0.,return_dict=True)
+            if not enabled and hasattr(objective,'record_baseline'):
+                objective.record_baseline(index,decode_estimate(pipe,original.pred_original_sample))
         progress=index/max(len(timesteps)-1,1)
         active=(objective is not None and enabled and index%config.every==0
                 and config.start_fraction<progress<=config.end_fraction)
         record=dict(step=index,timestep=int(t),active=active,accepted=False,state_update=config.state_update,
                     base_transition_rms=float((original.prev_sample-latent).square().mean().sqrt()))
         chosen=original
-        if active and config.local_edit:
+        if active and hasattr(objective,'optimize_clean'):
+            if config.state_update!='clean_residual' or config.clean_step_ratio is None:
+                raise ValueError('Iterative objective requires clean_residual guidance')
+            edited,summary=objective.optimize_clean(original.pred_original_sample,
+                lambda z:decode_estimate(pipe,z),iterations=(max(config.inner_iterations,config.final_inner_iterations)
+                    if index==len(timesteps)-1 else config.inner_iterations),
+                step_ratio=config.clean_step_ratio,backtracks=config.backtracks,
+                budget_ratio=config.max_clean_change_ratio,step_index=index)
+            record.update(summary)
+            if summary['accepted']:
+                delta=edited-original.pred_original_sample
+                prev_t=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
+                a=(scheduler.alphas_cumprod[prev_t] if prev_t>=0 else scheduler.final_alpha_cumprod).to(latent)
+                chosen=type(original)(prev_sample=original.prev_sample+a.sqrt()*delta,pred_original_sample=edited)
+                record['state_delta_rms']=float((chosen.prev_sample-original.prev_sample).square().mean().sqrt())
+                record['clean_delta_rms']=float(delta.square().mean().sqrt())
+        elif active and config.local_edit:
             from stroke_model.local_reference_edit import LocalReferenceEdit,optimize_local
             if objective.source_guard is None:raise ValueError('Local edit requires reference sheet')
             if editor is None:
