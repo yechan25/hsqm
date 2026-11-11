@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from scipy.ndimage import distance_transform_edt
 from stroke_model.soft_assignment_guidance import SoftAssignmentGuidance
-from diffusion_model.guided_ddim import GuidanceConfig,denoise
+from diffusion_model.guided_ddim import GuidanceConfig,denoise,format_guidance_record
 
 
 class Extractor(nn.Module):
@@ -34,6 +34,16 @@ def example():
 class SoftAssignmentTests(unittest.TestCase):
     def setUp(self):torch.set_num_threads(1)
 
+    def test_console_distinguishes_rejected_guidance_from_inactive_schedule(self):
+        inactive=format_guidance_record(dict(active=False,accepted=False))
+        rejected=format_guidance_record(dict(active=True,accepted=False,edit_loss_before=1.,edit_loss_after=1.,
+            attempts=[dict(reason='healthy_guard',guard_failures=[dict(name='slot_2_stroke_1_mass_drop')])],
+            anchor_guard_failures=[dict(name='protected_rms')]))
+        self.assertIn('state=inactive',inactive)
+        self.assertIn('active=True',rejected);self.assertIn('state=rejected',rejected)
+        self.assertIn('slot_2_stroke_1_mass_drop',rejected)
+        self.assertIn('anchor_already_outside_guard=True',rejected)
+
     def test_probabilities_do_not_cancel_and_geometry_is_strong_control(self):
         rgb,slots=example()
         normal=SoftAssignmentGuidance(Extractor(),slots,rgb,allowance=2)
@@ -54,6 +64,8 @@ class SoftAssignmentTests(unittest.TestCase):
         self.assertLess(record['edit_loss_after'],record['edit_loss_before']*.9)
         self.assertEqual(model.calls,calls+1)
         self.assertFalse(objective.weights.requires_grad)
+        self.assertIn('fixed_map_edit_after',record)
+        self.assertIn('anchor_guard_failures',record)
         self.assertIsNone(model.gain.grad)
         torch.testing.assert_close(model.gain,original_weights)
         self.assertLessEqual(record['healthy_mass_drop'],record['guard_limits'][2]+1e-6)

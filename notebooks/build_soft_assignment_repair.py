@@ -25,7 +25,7 @@ def build():
     position=source.index('runtime_helpers=');finish=source.index('for name,code in runtime_helpers.items():',position)
     helpers={p:(ROOT/p).read_text(encoding='utf-8') for p in (
         'diffusion_model/saved_repair_demo.py','stroke_model/saved_extra_guide.py',
-        'diffusion_model/guided_ddim.py','stroke_model/soft_assignment_guidance.py')}
+        'diffusion_model/guided_ddim.py','diffusion_model/run_topo_guidance.py','stroke_model/soft_assignment_guidance.py')}
     source=source[:position]+'runtime_helpers='+repr(helpers)+'\n'+source[finish:]
     source=source.replace("HSQM/'saved_repair_demo'","HSQM/'soft_assignment_repair'")
     source=source.replace('ARCHIVE=None',"ARCHIVE=Path('/content/guidance_debug (4).zip') if Path('/content/guidance_debug (4).zip').is_file() else None",1)

@@ -6,6 +6,7 @@ explicit guided mean update with the U-Net residual held fixed. Backtrack until
 the SAME timestep's objective decreases. This does not guarantee final quality.
 """
 from copy import deepcopy
+from collections import Counter
 from dataclasses import asdict, dataclass
 import math
 
@@ -103,6 +104,22 @@ def _mean_score(details):
     key='extracted_stroke_score_no_extra'
     if not all(key in row for row in details['per_glyph']):return None
     return sum(float(row[key].detach()) for row in details['per_glyph'])/len(details['per_glyph'])
+
+
+def format_guidance_record(record):
+    """Do not conflate scheduled-off guidance with rejected proposals."""
+    active=bool(record.get('active'));accepted=bool(record.get('accepted'))
+    state='accepted' if accepted else 'rejected' if active else 'inactive'
+    fields=[f'active={active}',f'accepted={accepted}',f'state={state}']
+    if active:
+        fields.append(f"inner={record.get('accepted_inner_steps',int(accepted))}")
+        fields.append(f"edit={record.get('edit_loss_before',record.get('loss_before'))} -> {record.get('edit_loss_after',record.get('loss_after'))}")
+        reasons=Counter(a['reason'] for a in record.get('attempts',[]) if a.get('reason')!='accepted')
+        if reasons:fields.append('reject='+','.join(f'{name}:{count}' for name,count in reasons.items()))
+        failed=Counter(f['name'] for a in record.get('attempts',[]) for f in a.get('guard_failures',[]))
+        if failed:fields.append('guards='+','.join(f'{name}:{count}' for name,count in failed.items()))
+        if record.get('anchor_guard_failures'):fields.append('anchor_already_outside_guard=True')
+    return ' | '.join(fields)
 
 
 def denoise(pipe,initial,timesteps,embeddings,*,objective=None,config=None,cfg_scale=7.5,on_step=None):

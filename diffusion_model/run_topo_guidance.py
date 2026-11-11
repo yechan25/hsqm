@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 import torch
 
-from .guided_ddim import GuidanceConfig, decode_estimate, denoise
+from .guided_ddim import GuidanceConfig, decode_estimate, denoise, format_guidance_record
 from .multiglyph_pilot import compose_sheet
 from .score_pilot import scored_ink, training_catalog
 from stroke_model.diffusion_guidance import TopoGuidance
@@ -236,8 +236,7 @@ def generate_guided_pair(manifest,manifest_rows,checkpoint,output,*,model_id=
                 np.savez_compressed(destination/'local_edit_maps.npz',**maps)
                 for name,values in maps.items():
                     Image.fromarray((values[0,0]*255).astype(np.uint8)).save(destination/f'local_{name}.png')
-            print(f"{method} {record['step']+1}/{len(timesteps)} | guidance={record['accepted']} "
-                  f"| loss={record.get('loss_before')} -> {record.get('loss_after')}",flush=True)
+            print(f"{method} {record['step']+1}/{len(timesteps)} | {format_guidance_record(record)}",flush=True)
             with (destination/f'trace_{method}.jsonl').open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(record)+'\n')
             if record['step']%config.snapshot_every==0 or record['step']==len(timesteps)-1:

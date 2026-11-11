@@ -34,7 +34,7 @@ class SoftAssignmentGuidance(nn.Module):
         self.baseline_mass_slack=baseline_mass_slack;self.baseline_guards={}
         self.register_buffer('source',source_rgb.detach().float().clone())
         self.register_buffer('source_ink',self.ink(source_rgb).detach())
-        healthy=[];bands=[]
+        healthy=[];bands=[];guard_names=['protected_rms','protected_local_rms']
         target=torch.ones_like(source_rgb)
         for i,slot in enumerate(slots):
             reference=source_rgb.new_tensor(np.asarray(slot['reference']))[None]
@@ -69,7 +69,9 @@ class SoftAssignmentGuidance(nn.Module):
                 sheet=torch.zeros_like(self.source_ink)
                 sheet[...,y0:y1,x0:x1]=F.interpolate(region,(y1-y0,x1-x0),mode='nearest')
                 healthy.append(sheet)
+                guard_names.append(f'slot_{i+1}_stroke_{k+1}_mass_drop')
         self.bands=bands
+        self.guard_names=guard_names
         self.register_buffer('target',target.detach())
         self.register_buffer('healthy',torch.cat(healthy,1))
         self.register_buffer('initial_weights',torch.zeros_like(self.source_ink))
@@ -183,6 +185,8 @@ class SoftAssignmentGuidance(nn.Module):
             self.refresh(anchor_rgb)
             limits=self.guard_limits(anchor_rgb,step_index)
             initial_edit,initial_keep=self.terms(anchor_rgb)
+            initial_fixed_edit,_=self.terms(anchor_rgb,weights=self.initial_weights)
+            initial_guard=self.guard_vector(anchor_rgb)
             initial_total=initial_edit+self.preserve_weight*initial_keep
         value=anchor.clone();attempts=[];accepted_count=0
         scale=anchor.square().mean().sqrt().clamp_min(1e-3)
@@ -215,16 +219,22 @@ class SoftAssignmentGuidance(nn.Module):
                 attempts.append(dict(inner=inner,backtrack=retry,edit_before=float(edit.detach()),
                     edit_after=float(after_edit),protected_rms=float(guard[0]),
                     protected_local_rms=float(guard[1]),healthy_mass_drop=float(guard[2:].amax()),
-                    violated_guards=(guard>limits).nonzero().flatten().cpu().tolist(),reason=reason))
+                    violated_guards=(guard>limits).nonzero().flatten().cpu().tolist(),
+                    guard_failures=[dict(name=self.guard_names[j],value=float(guard[j]),limit=float(limits[j]),
+                        excess=float(guard[j]-limits[j])) for j in (guard>limits).nonzero().flatten().cpu().tolist()],reason=reason))
                 if reason=='accepted':
                     value=candidate.detach();accepted_count+=1;accepted=True;break
             if not accepted:break
         with torch.no_grad():
             final_rgb=decode(value);final_edit,final_keep=self.terms(final_rgb)
             final_guard=self.guard_values(final_rgb)
+            final_fixed_edit,_=self.terms(final_rgb,weights=self.initial_weights)
         return value,dict(accepted=accepted_count>0,accepted_inner_steps=accepted_count,
             loss_before=float(initial_total),loss_after=float(final_edit+self.preserve_weight*final_keep),
             edit_loss_before=float(initial_edit),edit_loss_after=float(final_edit),
+            fixed_map_edit_before=float(initial_fixed_edit),fixed_map_edit_after=float(final_fixed_edit),
+            anchor_guard_failures=[dict(name=self.guard_names[j],value=float(initial_guard[j]),limit=float(limits[j]))
+                for j in (initial_guard>limits).nonzero().flatten().cpu().tolist()],
             preservation_loss_before=float(initial_keep),preservation_loss_after=float(final_keep),
             protected_rms=float(final_guard[0]),protected_local_rms=float(final_guard[1]),
             healthy_mass_drop=float(final_guard[2]),
