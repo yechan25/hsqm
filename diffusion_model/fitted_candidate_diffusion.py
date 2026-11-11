@@ -14,6 +14,19 @@ from torch.nn import functional as F
 def load_case(archive, case_id):
     """Read named members only; recorded Colab absolute paths are not trusted."""
     with zipfile.ZipFile(archive) as z:
+        if 'case_manifest.json' not in z.namelist():
+            report = json.loads(z.read('report.json'))
+            metadata = dict(report['metadata'])
+            if metadata['case']['case_id'] != case_id:
+                raise ValueError('CASE_ID does not match the saved reverse experiment')
+            with Image.open(io.BytesIO(z.read('input.png'))) as im:
+                source = im.convert('RGB').copy()
+            with Image.open(io.BytesIO(z.read('fitted_candidate.png'))) as im:
+                target = im.convert('RGB').copy()
+            if source.size != target.size or any(n % 8 for n in source.size):
+                raise ValueError('Input/candidate dimensions mismatch')
+            metadata['reused_archive_kind'] = 'reverse_result_original_input_and_candidate'
+            return source, target, metadata
         cases = json.loads(z.read('case_manifest.json'))
         matches = [c for c in cases if c['case_id'] == case_id]
         if len(matches) != 1:
@@ -39,6 +52,73 @@ def load_case(archive, case_id):
 def image_tensor(image, device):
     a = np.asarray(image, dtype=np.float32) / 255
     return torch.from_numpy(a.copy()).permute(2, 0, 1)[None].to(device)
+
+
+class InkConstraintObjective:
+    """Candidate supplies fixed sparse constraints, never RGB target pixels."""
+    def __init__(self, source, candidate, *, enable_restore=False, tolerance=5.,
+                 halo=2, preserve_weight=.5, background_ink=.015, required_ink=.7):
+        from scipy.ndimage import distance_transform_edt, binary_dilation
+        from skimage.morphology import skeletonize
+        if source.shape != candidate.shape or source.shape[:2] != (1, 3):
+            raise ValueError('Expected matching single RGB sheets')
+        if not np.isfinite(tolerance) or tolerance < 2 or type(halo) is not int or halo < 0:
+            raise ValueError('Invalid constraint tolerance/halo')
+        if not 0 <= background_ink < required_ink <= 1 or preserve_weight < 0:
+            raise ValueError('Invalid ink constraints')
+        self.source = source.detach()
+        self.preserve_weight = preserve_weight
+        self.background_ink, self.required_ink = background_ink, required_ink
+        source_ink = self.ink(source).detach().cpu().numpy()[0, 0]
+        target_ink = self.ink(candidate).detach().cpu().numpy()[0, 0]
+        source_binary, target_binary = source_ink > .35, target_ink > .35
+        if not source_binary.any() or not target_binary.any():
+            raise ValueError('Empty source or candidate: cannot infer safe correspondence')
+        distance = distance_transform_edt(~target_binary)
+        # Ignore ordinary boundary/width differences within a tolerance corridor.
+        seeds = source_binary & (distance > tolerance)
+        nearby = binary_dilation(seeds, iterations=halo) if halo else seeds
+        erase = nearby*np.clip((distance-1)/max(tolerance-1, 1), 0, 1)
+        # Restore only an absent centerline, not the candidate's full silhouette.
+        missing = skeletonize(target_binary) & (distance_transform_edt(~source_binary) > tolerance)
+        restore = missing.astype(np.float32) if enable_restore else np.zeros_like(erase)
+        erase[restore > 0] = 0  # Never issue conflicting instructions.
+        def tensor(a):
+            return torch.as_tensor(a.copy(), dtype=torch.float32, device=source.device)[None, None]
+        self.erase, self.restore = tensor(erase), tensor(restore)
+        self.edit = torch.maximum(self.erase, self.restore)
+        occupied = (self.edit > 0).float()
+        self.preserve = 1-F.max_pool2d(occupied, 5, 1, 2)
+        self.metadata = dict(enable_restore=enable_restore, tolerance_pixels=tolerance,
+            halo_pixels=halo, preserve_weight=preserve_weight,
+            background_ink=background_ink, required_ink=required_ink,
+            erase_pixels=int((self.erase > 0).sum()), restore_pixels=int((self.restore > 0).sum()),
+            candidate_rgb_matching=False, masks_frozen_for_entire_pass=True)
+
+    @staticmethod
+    def ink(rgb):
+        return 1-(rgb*rgb.new_tensor([.299, .587, .114])[None, :, None, None]).sum(1, keepdim=True)
+
+    def project_gradient(self, gradient):
+        # A small latent context halo permits VAE reconstruction at edit boundaries.
+        support = F.adaptive_max_pool2d((self.edit > 0).float(), gradient.shape[-2:])
+        return gradient*F.max_pool2d(support, 3, 1, 1)
+
+    def __call__(self, image):
+        ink = self.ink(image)
+        remaining = F.relu(ink-self.background_ink)
+        erase = CandidateObjective.mean_region(remaining, self.erase)
+        # Penalize the darkest residual pixels as well as average remaining ink.
+        active = remaining[self.erase > 0]
+        tail = active.topk(max(1, int(active.numel()*.1))).values.mean() if active.numel() else erase*0
+        restore = CandidateObjective.mean_region(F.relu(self.required_ink-ink), self.restore)
+        preserve = CandidateObjective.mean_region((image-self.source).square(), self.preserve)
+        healthy_ink = self.preserve*(self.ink(self.source) > .2).float()
+        healthy_mse = CandidateObjective.mean_region((image-self.source).square(), healthy_ink)
+        loss = erase+.25*tail+restore+self.preserve_weight*preserve
+        return loss, dict(erase_ink=float(erase.detach()), erase_tail=float(tail.detach()),
+            restore_deficit=float(restore.detach()), preserved_region_mse=float(preserve.detach()),
+            healthy_ink_rgb_mse=float(healthy_mse.detach()))
 
 
 class CandidateObjective:
@@ -78,6 +158,8 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
             leaf = current.detach().requires_grad_(True)
             loss, _ = objective(decode(leaf))
             gradient, = torch.autograd.grad(loss, leaf)
+            if hasattr(objective, 'project_gradient'):
+                gradient = objective.project_gradient(gradient)
         if not torch.isfinite(gradient).all() or not torch.isfinite(loss):
             raise FloatingPointError('Nonfinite candidate guidance')
         norm = gradient.square().mean().sqrt()
@@ -108,7 +190,7 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
 def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
              seed=2026, cfg_scale=5., inner_steps=4, step_ratio=.02,
              model_id='stable-diffusion-v1-5/stable-diffusion-v1-5', revision=None,
-             progress=None):
+             progress=None, guidance_mode='candidate', constraint_config=None):
     """Identical source VAE encoding, noise, prompt, scheduler in both arms."""
     if not torch.cuda.is_available():
         raise RuntimeError('Select an L4 GPU runtime in Colab')
@@ -116,6 +198,8 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         raise ValueError('Need at least two actual re-denoising steps')
     if inner_steps < 1 or step_ratio <= 0 or cfg_scale <= 1:
         raise ValueError('Invalid guidance configuration')
+    if guidance_mode not in ('candidate', 'ink_constraints'):
+        raise ValueError('Unknown guidance mode')
     from diffusers import StableDiffusionImg2ImgPipeline, DDIMScheduler
     from copy import deepcopy
     out = Path(output)
@@ -152,10 +236,17 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         with torch.no_grad():
             array = decode(z)[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         Image.fromarray(np.rint(array*255).astype('uint8')).save(path)
-    objective = CandidateObjective(image_tensor(source, 'cuda'), image_tensor(candidate, 'cuda'))
+    source_rgb, candidate_rgb = image_tensor(source, 'cuda'), image_tensor(candidate, 'cuda')
+    objective = (InkConstraintObjective(source_rgb, candidate_rgb, **(constraint_config or {}))
+                 if guidance_mode == 'ink_constraints' else CandidateObjective(source_rgb, candidate_rgb))
     Image.fromarray((objective.edit[0, 0].cpu().numpy()*255).astype('uint8')).save(out/'edit_region.png')
+    if guidance_mode == 'ink_constraints':
+        for name in ('erase', 'restore', 'preserve'):
+            Image.fromarray(np.rint(getattr(objective, name)[0, 0].cpu().numpy()*255).astype('uint8')).save(out/f'{name}_region.png')
+        (out/'constraints.json').write_text(json.dumps(objective.metadata, indent=2), encoding='utf-8')
+    guided_name = 'ink_guided' if guidance_mode == 'ink_constraints' else 'candidate_guided'
     traces, metrics = {}, {}
-    for method in ('redenoise_only', 'candidate_guided'):
+    for method in ('redenoise_only', guided_name):
         scheduler = deepcopy(pipe.scheduler)
         latent = initial.detach().float().clone()
         trace = []
@@ -169,7 +260,7 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
             record = dict(step=i, timestep=int(t), active=False, accepted_inner_steps=0)
             latent = base.prev_sample.detach()
             clean = base.pred_original_sample.detach()
-            if method == 'candidate_guided' and i/max(len(timesteps)-1, 1) >= .2:
+            if method == guided_name and i/max(len(timesteps)-1, 1) >= .2:
                 clean, result = optimize_clean(clean, decode, objective,
                     iterations=inner_steps if i < len(timesteps)-1 else inner_steps*2,
                     step_ratio=step_ratio)
@@ -198,9 +289,11 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         steps=steps, actual_steps=len(timesteps), strength=strength, seed=seed,
         cfg_scale=cfg_scale, inner_steps=inner_steps, step_ratio=step_ratio,
         initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
-        paired_initial_latent=True, guidance_target='extractor_fitted_candidate',
+        paired_initial_latent=True, guidance_target=guidance_mode,
+        constraints=getattr(objective, 'metadata', None),
         target_pixels_pasted_into_output=False, metrics=metrics, traces=traces,
-        metric_note='Candidate agreement, not ground-truth accuracy or HSQM score')
+        metric_note=('Fixed ink constraints and source preservation; not GT accuracy or HSQM score'
+                     if guidance_mode == 'ink_constraints' else 'Candidate agreement, not ground-truth accuracy or HSQM score'))
     (out/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     del pipe
     torch.cuda.empty_cache()

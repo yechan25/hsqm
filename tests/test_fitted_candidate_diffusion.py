@@ -66,6 +66,10 @@ class FittedCandidateTests(unittest.TestCase):
         self.assertEqual(embedded, (root/'diffusion_model/fitted_candidate_diffusion.py').read_text(encoding='utf-8'))
 
     def test_paired_loop_reuses_initial_state_and_guidance_changes_diffusion_state(self):
+        # Import native-extension dependencies before patch.dict(sys.modules),
+        # which otherwise removes newly imported modules on leaving the mock.
+        import scipy.ndimage
+        import skimage.morphology
         # A deterministic epsilon/DDIM stand-in exercises the actual runner,
         # including clean-to-previous-state transfer and terminal VAE decoding.
         calls = []
@@ -112,15 +116,20 @@ class FittedCandidateTests(unittest.TestCase):
              patch('torch.cuda.empty_cache'), \
              patch('diffusion_model.fitted_candidate_diffusion.image_tensor',
                    side_effect=lambda image, device: image_tensor(image, 'cpu')):
-            out = Path(directory)/'run'
-            report = run_pair(Image.new('RGB', (16, 16), 'gray'), Image.new('RGB', (16, 16), 'white'),
-                              {}, out, steps=4, strength=.5)
-            self.assertTrue(torch.equal(calls[0][1], calls[2][1]))
-            self.assertTrue(report['paired_initial_latent'])
-            self.assertGreater(report['traces']['candidate_guided'][-1]['accepted_inner_steps'], 0)
-            self.assertLess(report['metrics']['candidate_guided']['loss'],
-                            report['metrics']['redenoise_only']['loss'])
-            self.assertNotEqual((out/'candidate_guided.png').read_bytes(), (out/'fitted_candidate.png').read_bytes())
+            for mode, name in [('candidate', 'candidate_guided'), ('ink_constraints', 'ink_guided')]:
+                with self.subTest(mode=mode):
+                    calls.clear()
+                    out = Path(directory)/mode
+                    target = Image.new('RGB', (16, 16), 'white')
+                    if mode == 'ink_constraints':
+                        target.paste((0, 0, 0), (12, 2, 15, 14))
+                    report = run_pair(Image.new('RGB', (16, 16), 'gray'), target,
+                                      {}, out, steps=4, strength=.5, guidance_mode=mode)
+                    self.assertTrue(torch.equal(calls[0][1], calls[2][1]))
+                    self.assertTrue(report['paired_initial_latent'])
+                    self.assertGreater(report['traces'][name][-1]['accepted_inner_steps'], 0)
+                    self.assertLess(report['metrics'][name]['loss'], report['metrics']['redenoise_only']['loss'])
+                    self.assertNotEqual((out/(name+'.png')).read_bytes(), (out/'fitted_candidate.png').read_bytes())
 
 
 if __name__ == '__main__':
