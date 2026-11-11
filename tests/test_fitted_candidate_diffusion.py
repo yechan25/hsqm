@@ -117,10 +117,12 @@ class FittedCandidateTests(unittest.TestCase):
              patch('diffusion_model.fitted_candidate_diffusion.image_tensor',
                    side_effect=lambda image, device: image_tensor(image, 'cpu')):
             class Dynamic(InkConstraintObjective):
-                def __init__(self, source, candidate):
+                def __init__(self, source, candidate, deny=False):
                     super().__init__(source, candidate)
                     self.history = []
                     self.evaluations = 0
+                    self.deny = deny
+                    self.baseline_steps = []
                 def maybe_refresh(self, image, step):
                     row = dict(step=step, erase_pixels=int((self.erase > 0).sum()))
                     self.history.append(row)
@@ -131,23 +133,34 @@ class FittedCandidateTests(unittest.TestCase):
                 def export_state(self, path):
                     import numpy as np
                     np.savez(path, identity=np.arange(2))
-            for mode, name in [('candidate', 'candidate_guided'), ('ink_constraints', 'ink_guided'), ('adaptive_ink', 'adaptive_guided')]:
+                def record_baseline(self, step, image):self.baseline_steps.append(step)
+                def begin_step(self, step):self.step=step
+                def check_proposal(self, before, after):return not self.deny
+                def finish_arm(self, name, image):pass
+                def select_result(self, name):return dict(file='input.png' if self.deny else name+'.png')
+            for mode, name, deny in [('candidate', 'candidate_guided', False), ('ink_constraints', 'ink_guided', False), ('adaptive_ink', 'adaptive_guided', False), ('adaptive_ink', 'adaptive_guided', True)]:
                 with self.subTest(mode=mode):
                     calls.clear()
-                    out = Path(directory)/mode
+                    out = Path(directory)/(mode+str(deny))
                     target = Image.new('RGB', (16, 16), 'white')
                     if mode != 'candidate':
                         target.paste((0, 0, 0), (12, 2, 15, 14))
                     source = Image.new('RGB', (16, 16), 'gray')
-                    dynamic = Dynamic(image_tensor(source, 'cpu'), image_tensor(target, 'cpu')) if mode == 'adaptive_ink' else None
+                    dynamic = Dynamic(image_tensor(source, 'cpu'), image_tensor(target, 'cpu'), deny=deny) if mode == 'adaptive_ink' else None
                     report = run_pair(source, target, {}, out, steps=4, strength=.5,
                                       guidance_mode=mode, objective_override=dynamic)
                     self.assertTrue(torch.equal(calls[0][1], calls[2][1]))
                     self.assertTrue(report['paired_initial_latent'])
-                    self.assertGreater(report['traces'][name][-1]['accepted_inner_steps'], 0)
-                    self.assertLess(report['metrics'][name]['loss'], report['metrics']['redenoise_only']['loss'])
+                    if deny:
+                        self.assertEqual(report['traces'][name][-1]['accepted_inner_steps'], 0)
+                        self.assertGreater(report['traces'][name][-1]['rejected_guard_attempts'], 0)
+                        self.assertEqual((out/'selected.png').read_bytes(), (out/'input.png').read_bytes())
+                    else:
+                        self.assertGreater(report['traces'][name][-1]['accepted_inner_steps'], 0)
+                        self.assertLess(report['metrics'][name]['loss'], report['metrics']['redenoise_only']['loss'])
                     self.assertNotEqual((out/(name+'.png')).read_bytes(), (out/'fitted_candidate.png').read_bytes())
                     if dynamic is not None:
+                        self.assertEqual(dynamic.baseline_steps, [0, 1])
                         self.assertEqual(dynamic.evaluations, 3)  # Both arms + input, one fixed evaluator.
                         self.assertEqual(len(report['constraint_history']), 1)
                         self.assertTrue((out/'ownership_step_001.npz').is_file())

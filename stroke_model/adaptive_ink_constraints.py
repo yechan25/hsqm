@@ -29,16 +29,23 @@ def checkpoint_hash(path):
 def load_stroke_bundle(archive, case_id):
     """Only known ZIP members are read, no recorded absolute paths are followed."""
     with zipfile.ZipFile(archive) as z:
-        info = json.loads(z.read('experiment_info.json'))
-        manifest = json.loads(z.read('source_conditions/conditions.json'))
+        prefix = ''
+        if 'experiment_info.json' in z.namelist():
+            info = json.loads(z.read('experiment_info.json'))
+        else:
+            metadata = json.loads(z.read('report.json'))['metadata']
+            if metadata['case']['case_id'] != case_id:raise ValueError('Saved bundle CASE_ID mismatch')
+            info = dict(checkpoint_sha256=metadata['checkpoint_sha256'])
+            prefix = 'stroke_bundle/'
+        manifest = json.loads(z.read(prefix+'source_conditions/conditions.json'))
         records = []
         if len(manifest) != 4:
             raise ValueError('Exactly four reference slots required')
         for i, entry in enumerate(manifest):
             name = entry['path'].replace('\\', '/').rsplit('/', 1)[-1]
-            with np.load(io.BytesIO(z.read('source_conditions/'+name)), allow_pickle=False) as d:
+            with np.load(io.BytesIO(z.read(prefix+'source_conditions/'+name)), allow_pickle=False) as d:
                 reference, strokes = d['reference'].copy(), d['strokes'].copy()
-            with np.load(io.BytesIO(z.read(f'{case_id}/warped_slot_{i+1}.npz')), allow_pickle=False) as d:
+            with np.load(io.BytesIO(z.read(f'{prefix}{case_id}/warped_slot_{i+1}.npz')), allow_pickle=False) as d:
                 fitted = d['warped_strokes'].copy()
             if strokes.shape != fitted.shape or reference.shape != (1, *strokes.shape[-2:]):
                 raise ValueError('Reference/fitted stroke shape mismatch')

@@ -153,6 +153,7 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
     with torch.no_grad():
         before, _ = objective(decode(current))
     accepted = 0
+    rejected_guards = 0
     for _ in range(iterations):
         with torch.enable_grad():
             leaf = current.detach().requires_grad_(True)
@@ -168,13 +169,19 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
         direction = step_ratio*scale*gradient/norm
         found = False
         with torch.no_grad():
+            before_image = decode(current) if hasattr(objective, 'check_proposal') else None
             for attempt in range(backtracks+1):
                 proposal = current-direction*(.5**attempt)
                 delta = proposal-anchor
                 rms = delta.square().mean().sqrt().clamp_min(1e-12)
                 proposal = anchor+delta*(budget_ratio*scale/rms).clamp(max=1)
-                trial, _ = objective(decode(proposal))
-                if torch.isfinite(trial) and trial < loss.detach():
+                trial_image = decode(proposal)
+                trial, _ = objective(trial_image)
+                guard_ok = True
+                if torch.isfinite(trial) and trial < loss.detach() and hasattr(objective, 'check_proposal'):
+                    guard_ok = objective.check_proposal(before_image, trial_image)
+                    rejected_guards += int(not guard_ok)
+                if torch.isfinite(trial) and trial < loss.detach() and guard_ok:
                     current = proposal.detach()
                     accepted += 1
                     found = True
@@ -184,7 +191,7 @@ def optimize_clean(clean, decode, objective, *, iterations=4, step_ratio=.02,
     with torch.no_grad():
         after, details = objective(decode(current))
     return current, dict(loss_before=float(before), loss_after=float(after),
-                         accepted_inner_steps=accepted, **details)
+                         accepted_inner_steps=accepted, rejected_guard_attempts=rejected_guards, **details)
 
 
 def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
@@ -267,7 +274,10 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
             record = dict(step=i, timestep=int(t), active=False, accepted_inner_steps=0)
             latent = base.prev_sample.detach()
             clean = base.pred_original_sample.detach()
+            if method == 'redenoise_only' and hasattr(objective, 'record_baseline'):
+                with torch.no_grad():objective.record_baseline(i, decode(clean))
             if method == guided_name and i/max(len(timesteps)-1, 1) >= .2:
+                if hasattr(objective, 'begin_step'):objective.begin_step(i)
                 if hasattr(objective, 'maybe_refresh'):
                     with torch.no_grad():
                         refresh = objective.maybe_refresh(decode(clean), i)
@@ -299,6 +309,8 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
             evaluate = getattr(objective, 'evaluate_fixed', objective)
             loss, values = evaluate(decode(latent))
         metrics[method] = dict(loss=float(loss), **values)
+        if hasattr(objective, 'finish_arm'):
+            with torch.no_grad():objective.finish_arm(method, decode(latent))
         traces[method] = trace
     with torch.no_grad():
         loss, values = getattr(objective, 'evaluate_fixed', objective)(objective.source)
@@ -313,6 +325,11 @@ def run_pair(source, candidate, metadata, output, *, steps=60, strength=.35,
         target_pixels_pasted_into_output=False, metrics=metrics, traces=traces,
         metric_note=('Fixed ink constraints and source preservation; not GT accuracy or HSQM score'
                      if guidance_mode in ('ink_constraints', 'adaptive_ink') else 'Candidate agreement, not ground-truth accuracy or HSQM score'))
+    if hasattr(objective, 'select_result'):
+        import shutil
+        selection = objective.select_result(guided_name)
+        report['selection'] = selection
+        shutil.copy2(out/selection['file'], out/'selected.png')
     (out/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     del pipe
     torch.cuda.empty_cache()
