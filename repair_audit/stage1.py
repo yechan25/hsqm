@@ -281,13 +281,15 @@ def width_probe_conditions(conditions):
 
 def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
              cfg_scale=5., width_probe=False, progress=None,
-             boundary_guard=False, boundary_config=None):
+             boundary_guard=False, boundary_config=None, observed_width=False, width_config=None):
     import torch
     from diffusion_model.fitted_candidate_diffusion import image_tensor, optimize_clean
     from stroke_model.restore_settle_erase import RestoreSettleErase
     if steps < 4 or not 0 < strength < 1 or int(steps*strength) < 4:
         raise ValueError('Need at least four actual repair steps')
     directory = Path(case['directory'])
+    if observed_width and not boundary_guard:
+        raise ValueError('Observed-width comparison requires boundary_guard=True')
     out = directory / 'audit'
     out.mkdir(exist_ok=False)
     with Image.open(directory / 'input.png') as im:
@@ -340,6 +342,20 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
         json_write(out/'boundary_initial_diagnostics.json', guarded.boundary_history)
         guarded = BoundaryGuardedRepair(source_rgb, extractor, records, boundary_config=guard_config)
         arms.append(('boundary_guarded', guarded))
+    if observed_width:
+        from stroke_model.observed_width_repair import ObservedWidthConfig, ObservedWidthRepair
+        def calibrated_controller():
+            return ObservedWidthRepair(source_rgb, extractor, records,
+                boundary_config=guard_config, width_config=ObservedWidthConfig(**(width_config or {})))
+        calibrated = calibrated_controller()
+        with torch.no_grad():
+            calibrated.refresh_erase(source_rgb)
+        np.savez_compressed(out/'observed_width_initial_maps.npz',
+            erase=calibrated.erase.cpu().numpy(), restore=calibrated.restore.cpu().numpy(),
+            preserve=calibrated.preserve.cpu().numpy())
+        json_write(out/'observed_width_calibration.json', calibrated.metadata)
+        json_write(out/'observed_width_initial_diagnostics.json', calibrated.boundary_history)
+        arms.append(('observed_width', calibrated_controller()))
     if width_probe:
         alternate = width_probe_conditions(conditions)
         alt_records = fit_records(source, alternate, extractor, out / 'width_probe_input')
@@ -419,6 +435,7 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
             initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
             width_probe=width_probe, original_repair_parameters=True,
             boundary_guard=boundary_guard, boundary_config=boundary_config if boundary_guard else None,
+            observed_width=observed_width, width_config=width_config if observed_width else None,
             legacy_difference='Posterior mode, not legacy stochastic VAE encoding'),
         limitations=['Widths are fixed-source-center distance proxies; movement is a confound.',
             'Healthy masks are heuristic and require human review.',

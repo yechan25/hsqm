@@ -90,10 +90,10 @@ def materialize_inputs(groups, output, checkpoint_sha256):
     return cases, failures
 
 
-def shape_comparison(case):
+def shape_comparison(case, arms=None):
     """Fixed slot crops: no OCR selection, contour smoothing or straightening."""
     out = Path(case['directory'])/'audit'
-    arms = ['input', 'vae_roundtrip', 'redenoise_only', 'cyclic_guided', 'boundary_guarded']
+    arms = arms or ['input', 'vae_roundtrip', 'redenoise_only', 'cyclic_guided', 'boundary_guarded']
     if not all((out/f'{arm}.png').is_file() for arm in arms):
         return
     images = []

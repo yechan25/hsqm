@@ -114,6 +114,7 @@ class AuditTests(unittest.TestCase):
                 self.erase = torch.zeros_like(source[:, :1]); self.erase[..., 4:6, 4:6] = 1
                 self.restore = torch.zeros_like(self.erase); self.preserve=1-self.erase
                 self.boundary_history=[]
+                self.metadata={}
             def refresh_erase(self, image): pass
             def begin_step(self, image, index): return dict(phase='erase')
             def finish_step(self, image, row): pass
@@ -129,17 +130,20 @@ class AuditTests(unittest.TestCase):
             with patch('repair_audit.stage1.fit_records',return_value=[]), \
                  patch('repair_audit.stage1.make_figures'), \
                  patch('stroke_model.restore_settle_erase.RestoreSettleErase',Controller), \
-                 patch('stroke_model.boundary_guarded_repair.BoundaryGuardedRepair',Controller):
-                rows=run_case(Pipe(),extractor,case,steps=8,strength=.5,boundary_guard=True)
+                 patch('stroke_model.boundary_guarded_repair.BoundaryGuardedRepair',Controller), \
+                 patch('stroke_model.observed_width_repair.ObservedWidthRepair',Controller):
+                rows=run_case(Pipe(),extractor,case,steps=8,strength=.5,boundary_guard=True,observed_width=True)
             self.assertTrue(torch.equal(calls[0],calls[4]))
             self.assertTrue(torch.equal(calls[0],calls[8]))
+            self.assertTrue(torch.equal(calls[0],calls[12]))
             raw=np.asarray(Image.open(directory/'audit/redenoise_only.png')).astype(float)
             guided=np.asarray(Image.open(directory/'audit/cyclic_guided.png')).astype(float)
             self.assertGreater(guided[4:6,4:6].mean(),raw[4:6,4:6].mean())
             report=json.loads((directory/'audit/report.json').read_text())
             self.assertTrue(report['configuration']['paired_initial_latent'])
             self.assertNotIn('status',report)
-            self.assertEqual(len(rows),5*4*3)
+            self.assertEqual(len(rows),6*4*3)
+            self.assertTrue((directory/'audit/observed_width.png').is_file())
             self.assertIn('all_source_healthy_ink_mse',rows[0])
             write_tables(directory,[case],rows,[])
             self.assertTrue((directory/'human_review.csv').is_file())
