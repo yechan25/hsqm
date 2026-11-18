@@ -9,6 +9,7 @@
 | [stroke_model/](stroke_model/) | 획 분리 모델, 학습·추론·후처리 및 관련 데이터 처리 코드 |
 | [font_test/](font_test/) | 폰트 관련 실험 코드와 설정을 위한 공간 |
 | [diffusion_model/](diffusion_model/) | 한글 글자 조건부 확산 학습·생성 코드 |
+| [repair_audit/](repair_audit/) | 기존 획 보정의 추출 실패·두께 변화·정상 획 보존을 확인하는 독립 진단 |
 | [configs/](configs/) | 모델 학습 설정 |
 | [notebooks/](notebooks/) | Colab 실행 및 결과 확인 노트북 |
 | [tests/](tests/) | 코드 검증 및 배포 묶음 생성 도구 |
