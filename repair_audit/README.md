@@ -29,6 +29,12 @@
 자동 두께 지표와 기준 유사도는 정확도 판정이 아닙니다. 실제 얇아짐과 오류 감소는
 비교 이미지로 검수합니다. CPU 검증 통과와 실제 GPU 품질 검증은 구분합니다.
 
+## 다음 단계
+
+- [2단계: 삭제 경계 보호 비교](../docs/repair_audit/STAGE2.md)
+- **[3단계 Colab: 다른 글자 12자·획 형태 검증](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/stage3.ipynb)**
+- [3단계 자료 준비와 평가 안내](../docs/repair_audit/STAGE3.md)
+
 ## 개발
 
 저장소 루트에서 실행합니다.
@@ -36,6 +42,7 @@
 ```bash
 python notebooks/repair_audit/build_stage1.py
 python notebooks/repair_audit/build_stage2.py
+python notebooks/repair_audit/build_stage3.py
 python -m unittest discover -s tests -p test_repair_stage1_audit.py -v
 ```
 
