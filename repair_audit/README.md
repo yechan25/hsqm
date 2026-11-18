@@ -1,7 +1,13 @@
-# 획 보정 진단 — 1단계
+# 획 보정 진단·수정 비교
 
 기존 획 추출기와 생성 결과를 그대로 사용해 VAE 왕복, 일반 재역확산,
 복원·정리·삭제 보정의 차이를 확인하는 독립 진단 모듈입니다. 새 학습은 하지 않습니다.
+
+현재 단계: **1단계 원인 진단 완료 → 2단계 삭제 경계 보호 수정 비교**.
+
+- **[2단계 Colab 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/stage2.ipynb)**
+- [2단계 변경 사항·실행 안내](../docs/repair_audit/STAGE2.md)
+- 입력: 방금 실행한 stage1 결과 ZIP과 동일 best.pt. 기존·수정 보정을 같은 강도/잡음으로 비교합니다.
 
 - **[Colab에서 실행](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/stage1.ipynb)**
 - [실행 안내와 결과 해석](../docs/repair_audit/STAGE1.md)
@@ -29,6 +35,7 @@
 
 ```bash
 python notebooks/repair_audit/build_stage1.py
+python notebooks/repair_audit/build_stage2.py
 python -m unittest discover -s tests -p test_repair_stage1_audit.py -v
 ```
 

@@ -57,6 +57,9 @@ def _conditions(z, group):
 
 def read_archive(path, output, selected_case_ids=None, include_controls=True):
     """Materialize only named PNG/NPZ data, ignoring saved absolute paths/code."""
+    with zipfile.ZipFile(path) as check:
+        if 'archive_metadata.json' in check.namelist():
+            return read_stage1_archive(path, output, selected_case_ids, include_controls)
     destination = Path(output)
     if destination.exists():
         raise FileExistsError(destination)
@@ -116,6 +119,67 @@ def read_archive(path, output, selected_case_ids=None, include_controls=True):
                 prepared.append(dict(directory=str(target), **metadata))
     json_write(destination / 'archive_metadata.json', dict(archive_sha256=file_hash(path),
         experiment=experiment, selected_cases=prepared))
+    return prepared, experiment
+
+
+def read_stage1_archive(path, output, selected_case_ids=None, include_controls=True):
+    """Reuse original inputs from an audit ZIP, never the already guided outputs."""
+    destination = Path(output)
+    if destination.exists():
+        raise FileExistsError(destination)
+    with zipfile.ZipFile(path) as z:
+        metadata = json.loads(z.read('archive_metadata.json'))
+        experiment = metadata['experiment']
+        expected = experiment.get('checkpoint_sha256', '')
+        if not re.fullmatch(r'[0-9a-fA-F]{64}', expected):
+            raise ValueError('Missing original extractor SHA256')
+        recorded = metadata['selected_cases']
+        available = {c['case_id'] for c in recorded if c['kind'] == 'generated'}
+        selected = available if selected_case_ids is None else set(selected_case_ids)
+        if not selected or selected - available:
+            raise ValueError(f'Unknown/empty audit selection; available: {sorted(available)}')
+        chosen = [c for c in recorded if c['case_id'] in selected]
+        groups = {re.fullmatch(r'(group_[0-9]+)_page_[0-9]+', c['case_id']).group(1)
+                  for c in chosen if re.fullmatch(r'(group_[0-9]+)_page_[0-9]+', c['case_id'])}
+        if len(groups) == 0:
+            raise ValueError('Unsupported audit case identifiers')
+        if include_controls:
+            controls = {c['case_id']: c for c in recorded if c['kind'] == 'normal_control'}
+            for group in sorted(groups):
+                name = group + '_normal_control'
+                if name not in controls:
+                    raise ValueError('Audit ZIP lacks the matching normal control')
+                chosen.append(controls[name])
+        prepared = []
+        destination.mkdir(parents=True)
+        for entry in chosen:
+            identifier = entry['case_id']
+            if not re.fullmatch(r'group_[0-9]+_(page_[0-9]+|normal_control)', identifier):
+                raise ValueError('Invalid audit identifier')
+            target = destination / identifier
+            target.mkdir()
+            image = _rgb(z, identifier + '/input.png')
+            if image.width != image.height or image.width % 16:
+                raise ValueError('Invalid input sheet dimensions')
+            image.save(target / 'input.png')
+            # Same validation as the original four source conditions.
+            for slot in range(1, 5):
+                with np.load(io.BytesIO(z.read(f'{identifier}/condition_{slot}.npz')), allow_pickle=False) as a:
+                    ref, strokes = a['reference'].astype(np.float32), a['strokes'].astype(np.float32)
+                if (ref.ndim != 3 or ref.shape[0] != 1 or ref.shape[1] != ref.shape[2] or
+                        strokes.ndim != 3 or not len(strokes) or strokes.shape[1:] != ref.shape[1:]):
+                    raise ValueError('Invalid condition shape')
+                if any(not np.isfinite(v).all() or v.min() < 0 or v.max() > 1 for v in (ref, strokes)):
+                    raise ValueError('Invalid condition values')
+                if ref.max() <= .5 or (strokes.max((1, 2)) <= .5).any():
+                    raise ValueError('Empty condition')
+                np.savez_compressed(target/f'condition_{slot}.npz', reference=ref, strokes=strokes)
+            row = dict(entry, directory=str(target), checkpoint_sha256=expected.lower(),
+                       reused_stage1_original=True)
+            json_write(target/'input_metadata.json', row)
+            prepared.append(row)
+    json_write(destination/'archive_metadata.json', dict(archive_sha256=file_hash(path),
+        experiment=experiment, selected_cases=prepared, original_input_reused=True))
     return prepared, experiment
 
 
@@ -216,7 +280,8 @@ def width_probe_conditions(conditions):
 
 
 def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
-             cfg_scale=5., width_probe=False, progress=None):
+             cfg_scale=5., width_probe=False, progress=None,
+             boundary_guard=False, boundary_config=None):
     import torch
     from diffusion_model.fitted_candidate_diffusion import image_tensor, optimize_clean
     from stroke_model.restore_settle_erase import RestoreSettleErase
@@ -263,6 +328,18 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
     source.save(out / 'input.png')
     traces = {}
     arms = [('redenoise_only', None), ('cyclic_guided', controller)]
+    if boundary_guard:
+        from stroke_model.boundary_guarded_repair import BoundaryGuardConfig, BoundaryGuardedRepair
+        guard_config = BoundaryGuardConfig(**(boundary_config or {}))
+        guarded = BoundaryGuardedRepair(source_rgb, extractor, records, boundary_config=guard_config)
+        with torch.no_grad():
+            guarded.refresh_erase(source_rgb)
+        np.savez_compressed(out/'boundary_initial_maps.npz',
+            erase=guarded.erase.cpu().numpy(), restore=guarded.restore.cpu().numpy(),
+            preserve=guarded.preserve.cpu().numpy())
+        json_write(out/'boundary_initial_diagnostics.json', guarded.boundary_history)
+        guarded = BoundaryGuardedRepair(source_rgb, extractor, records, boundary_config=guard_config)
+        arms.append(('boundary_guarded', guarded))
     if width_probe:
         alternate = width_probe_conditions(conditions)
         alt_records = fit_records(source, alternate, extractor, out / 'width_probe_input')
@@ -309,6 +386,8 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
             save_tensor(decode(latent), out / (arm+'.png'))
         traces[arm] = trace
         json_write(out / (arm+'_trace.json'), trace)
+        if objective is not None and hasattr(objective, 'boundary_history'):
+            json_write(out/(arm+'_map_history.json'), objective.boundary_history)
     results = {'input': source, 'vae_roundtrip': Image.open(out / 'vae_roundtrip.png').convert('RGB')}
     for arm, _ in arms:
         results[arm] = Image.open(out / (arm+'.png')).convert('RGB')
@@ -323,14 +402,23 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
             box = (x, y, x+half, y+half)
             local = {k: v[y:y+half, x:x+half] for k, v in support.items()}
             for threshold in (.35, .5, .65):
-                metric_rows.append(dict(case_id=case['case_id'], kind=case['kind'], slot=slot+1, arm=arm,
-                    **measure(source.crop(box), result.crop(box), reference.crop(box), local, threshold)))
+                values = measure(source.crop(box), result.crop(box), reference.crop(box), local, threshold)
+                if boundary_guard:
+                    # Include all source foreground, including tips excluded by
+                    # the original automatic healthy mask. This still isn't GT.
+                    ink = ink_array(source.crop(box))
+                    all_source = dict(healthy=ink > .5, center=skeletonize(ink > .5))
+                    full = measure(source.crop(box), result.crop(box), reference.crop(box), all_source, threshold)
+                    values.update({'all_source_'+k:full[k] for k in
+                        ('fixed_center_width_ratio_proxy','healthy_ink_drop','healthy_ink_retention','healthy_ink_mse')})
+                metric_rows.append(dict(case_id=case['case_id'], kind=case['kind'], slot=slot+1, arm=arm, **values))
     json_write(out / 'report.json', dict(case=case, metrics=metric_rows, traces=traces,
         configuration=dict(steps=steps, actual_steps=len(timesteps), timesteps=[int(t) for t in timesteps],
             strength=strength, seed=seed, cfg_scale=cfg_scale, vae_dtype='float32',
             vae_posterior='mode_shared_by_all_arms', paired_initial_latent=True,
             initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
             width_probe=width_probe, original_repair_parameters=True,
+            boundary_guard=boundary_guard, boundary_config=boundary_config if boundary_guard else None,
             legacy_difference='Posterior mode, not legacy stochastic VAE encoding'),
         limitations=['Widths are fixed-source-center distance proxies; movement is a confound.',
             'Healthy masks are heuristic and require human review.',
