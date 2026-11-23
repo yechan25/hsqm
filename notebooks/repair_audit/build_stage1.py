@@ -17,6 +17,7 @@ def build():
              'diffusion_model/fitted_candidate_diffusion.py', 'stroke_model/restore_settle_erase.py']
     helpers = {name: embedded[name] for name in names}
     helpers['repair_audit/stage1.py'] = (ROOT / 'repair_audit/stage1.py').read_text(encoding='utf-8')
+    helpers['repair_audit/resume.py'] = (ROOT / 'repair_audit/resume.py').read_text(encoding='utf-8')
     hashes = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in helpers.items()}
     cells = []
     def add(kind, source):

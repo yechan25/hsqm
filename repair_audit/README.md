@@ -36,6 +36,8 @@
 - [3단계 자료 준비와 평가 안내](../docs/repair_audit/STAGE3.md)
 - **[4단계 Colab: 폐곡선 두께 보존 수정 비교](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/stage4.ipynb)**
 - [4단계 실행·수정 범위](../docs/repair_audit/STAGE4.md)
+- **[중단한 4단계 재개 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/stage4_resume.ipynb)**
+- [완료 경로 재사용·Drive 백업 안내](../docs/repair_audit/STAGE4_RESUME.md)
 
 ## 개발
 
@@ -46,6 +48,7 @@ python notebooks/repair_audit/build_stage1.py
 python notebooks/repair_audit/build_stage2.py
 python notebooks/repair_audit/build_stage3.py
 python notebooks/repair_audit/build_stage4.py
+python notebooks/repair_audit/build_stage4_resume.py
 python -m unittest discover -s tests -p test_repair_stage1_audit.py -v
 ```
 

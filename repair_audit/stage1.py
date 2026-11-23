@@ -281,7 +281,8 @@ def width_probe_conditions(conditions):
 
 def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
              cfg_scale=5., width_probe=False, progress=None,
-             boundary_guard=False, boundary_config=None, observed_width=False, width_config=None):
+             boundary_guard=False, boundary_config=None, observed_width=False, width_config=None,
+             resume=False, on_arm_complete=None):
     import torch
     from diffusion_model.fitted_candidate_diffusion import image_tensor, optimize_clean
     from stroke_model.restore_settle_erase import RestoreSettleErase
@@ -291,11 +292,18 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
     if observed_width and not boundary_guard:
         raise ValueError('Observed-width comparison requires boundary_guard=True')
     out = directory / 'audit'
-    out.mkdir(exist_ok=False)
+    out.mkdir(exist_ok=resume)
     with Image.open(directory / 'input.png') as im:
         source = im.convert('RGB').copy()
     conditions = load_conditions(directory)
-    records = fit_records(source, conditions, extractor, out / 'extraction_input')
+    records = None
+    if resume:
+        from .resume import load_records, complete_arm, archive_partial, rgb_hash
+        if (out/'input.png').exists() and rgb_hash(out/'input.png') != rgb_hash(directory/'input.png'):
+            raise ValueError('Cached audit input differs from requested source')
+        records = load_records(out, conditions)
+    if records is None:
+        records = fit_records(source, conditions, extractor, out / 'extraction_input')
     source_rgb = image_tensor(source, next(extractor.parameters()).device)
     controller = RestoreSettleErase(source_rgb, extractor, records)
     with torch.no_grad():
@@ -326,6 +334,35 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
         noise = torch.randn(clean_input.shape, generator=torch.Generator('cpu').manual_seed(seed),
                             dtype=torch.float32).to(clean_input.device)
         initial = pipe.scheduler.add_noise(clean_input, noise, timesteps[:1])
+    initial_hash = hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest()
+    legacy_initial_unrecorded = False
+    if resume:
+        signature = dict(steps=steps, strength=strength, seed=seed, cfg_scale=cfg_scale,
+            boundary_config=boundary_config, width_config=width_config,
+            input_rgb_sha256=rgb_hash(directory/'input.png'))
+        cache = out/'resume_state.json'
+        if cache.exists():
+            previous_state = json.loads(cache.read_text(encoding='utf-8'))
+            if previous_state['signature'] != signature:
+                raise ValueError('Resume settings/input differ from saved state')
+            with np.load(out/'resume_initial_latent.npz', allow_pickle=False) as a:
+                initial = torch.as_tensor(a['initial'].copy(), device=clean_input.device)
+            initial_hash = hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest()
+            if initial_hash != previous_state['initial_latent_sha256']:
+                raise ValueError('Cached initial latent is damaged')
+            legacy_initial_unrecorded = previous_state['legacy_initial_unrecorded']
+        else:
+            old_report = out/'report.json'
+            if old_report.exists():
+                expected = json.loads(old_report.read_text(encoding='utf-8'))['configuration']['initial_latent_sha256']
+                if expected != initial_hash:
+                    raise ValueError('Historical initial latent differs. Completed cases can be reused, but partial cases need matching runtime or a fresh comparison.')
+            else:
+                legacy_initial_unrecorded = any(complete_arm(out, a, [int(t) for t in timesteps])
+                                                for a in ('redenoise_only','cyclic_guided','boundary_guarded','observed_width'))
+            np.savez_compressed(out/'resume_initial_latent.npz', initial=initial.cpu().numpy())
+            json_write(cache, dict(signature=signature, initial_latent_sha256=initial_hash,
+                legacy_initial_unrecorded=legacy_initial_unrecorded))
     # Expose reconstruction before the actual rerun so failures still retain evidence.
     source.save(out / 'input.png')
     traces = {}
@@ -361,6 +398,14 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
         alt_records = fit_records(source, alternate, extractor, out / 'width_probe_input')
         arms.append(('reference_width_probe', RestoreSettleErase(source_rgb, extractor, alt_records)))
     for arm, objective in arms:
+        if resume and complete_arm(out, arm, [int(t) for t in timesteps]):
+            traces[arm] = json.loads((out/(arm+'_trace.json')).read_text(encoding='utf-8'))
+            if progress:
+                progress(case['case_id'], arm, len(timesteps), len(timesteps),
+                         dict(phase='cached', accepted_inner_steps=0))
+            continue
+        if resume:
+            archive_partial(out, arm)
         scheduler = deepcopy(pipe.scheduler)
         latent = initial.clone()
         trace = []
@@ -404,6 +449,8 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
         json_write(out / (arm+'_trace.json'), trace)
         if objective is not None and hasattr(objective, 'boundary_history'):
             json_write(out/(arm+'_map_history.json'), objective.boundary_history)
+        if on_arm_complete:
+            on_arm_complete(case['case_id'], arm)
     results = {'input': source, 'vae_roundtrip': Image.open(out / 'vae_roundtrip.png').convert('RGB')}
     for arm, _ in arms:
         results[arm] = Image.open(out / (arm+'.png')).convert('RGB')
@@ -431,7 +478,9 @@ def run_case(pipe, extractor, case, *, steps=60, strength=.25, seed=2026,
     json_write(out / 'report.json', dict(case=case, metrics=metric_rows, traces=traces,
         configuration=dict(steps=steps, actual_steps=len(timesteps), timesteps=[int(t) for t in timesteps],
             strength=strength, seed=seed, cfg_scale=cfg_scale, vae_dtype='float32',
-            vae_posterior='mode_shared_by_all_arms', paired_initial_latent=True,
+            vae_posterior='mode_shared_by_all_arms' if not legacy_initial_unrecorded else 'legacy_initial_not_recorded',
+            paired_initial_latent=not legacy_initial_unrecorded,
+            resume=resume, legacy_initial_unrecorded=legacy_initial_unrecorded,
             initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
             width_probe=width_probe, original_repair_parameters=True,
             boundary_guard=boundary_guard, boundary_config=boundary_config if boundary_guard else None,
