@@ -13,7 +13,8 @@ from torch.nn import functional as F
 
 
 def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative_prompt='',
-                       steps=60,strength=.25,seed=2026,cfg_scale=5.,start_from_noise=True,progress=None):
+                       steps=60,strength=.25,seed=2026,cfg_scale=5.,start_from_noise=False,
+                       save_final_projection=False,progress=None):
     from PIL import Image
     out=Path(output);out.mkdir(parents=True,exist_ok=False)
     if not 0<strength<=1 or steps<1 or (not start_from_noise and int(steps*strength)<1) or any(v%8 for v in source.size):
@@ -62,7 +63,7 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
                 trace.append(row)
                 if progress:progress(arm,index+1,len(ts),row)
             final=decode(latent);save(final,out/(arm+'.png'))
-            if arm=='stroke_projected':
+            if arm=='stroke_projected' and save_final_projection:
                 # Explicitly separate the raw diffusion output from the final
                 # image-space enforcement. Never label this as raw generation.
                 save(constraints.project(final),out/'stroke_projected_final_pixel_projection.png')
@@ -72,9 +73,11 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
         start_from_noise=start_from_noise,source_content_used=not start_from_noise,seed=seed,cfg_scale=cfg_scale,
         initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
         paired_initial_latent=True,backward_passes=0,additional_training=False,traces=traces,
+        guide=getattr(constraints,'metadata',dict(kind='per_stroke_ink_constraints')),
+        final_pixel_projection_saved=save_final_projection,
         saved_png_ink_tolerance=1/255,
-        limitations=['Correct target strokes must be supplied.','White background and dark ink only.',
-                     'Per-stroke constraints share one RGB canvas; union-equivalent constraints have the same projection.',
-                     'Final pixel-projected PNG is explicit postprocessing, separate from raw diffusion output.'])
+        limitations=['Target construction and extraction correspondence must be checked.',
+                     'VAE re-encoding can change the target and leak changes beyond a pixel mask.',
+                     'A separately requested final pixel projection is postprocessing, not raw generation.'])
     (out/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     return report

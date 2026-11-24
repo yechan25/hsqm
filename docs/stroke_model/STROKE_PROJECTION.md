@@ -47,7 +47,8 @@ python -m repair_audit.stroke_projection_pilot --archive "C:/Users/freeg/Downloa
 
 `run_projected_pair(pipe, source, constraints, output)`에 SD1.5 img2img 파이프라인을 넣는다.
 DDIM scheduler와 float32 VAE를 사용한다. 모델 평가 모드를 사용하며 학습하지 않는다.
-기본 `start_from_noise=True`는 원본 내용을 사용하지 않고 전체 잡음에서 지정한 획 구조로 생성하는 실험이다.
+현재 기본값은 `start_from_noise=False`인 원본 기반 img2img다.
+`start_from_noise=True`를 명시하면 원본 내용을 사용하지 않고 전체 잡음에서 지정한 획 구조로 생성하는 실험이다.
 이때 source는 캔버스 크기만 정하고 strength는 적용하지 않는다. 실제 steps 전체를 실행한다.
 원본 배경·스타일을 유지하는 기능이 아니므로 그 보존 성능을 주장하지 않는다.
 `start_from_noise=False`일 때만 기존 입력에 strength만큼 잡음을 넣는 img2img 비교가 된다.
@@ -57,7 +58,7 @@ VAE 왕복 비용이 있으므로 실제 속도 개선을 아직 주장하지 �
 일반/투영 경로는 초기 latent·잡음·시간 단계를 공유한다. `report.json`에 투영 전,
 픽셀 투영 직후, VAE 왕복 후 위반 수를 각각 기록한다. VAE 왕복에서는 제약이 다시 깨질 수 있다.
 `stroke_projected.png`는 원시 확산 출력이며,
-`stroke_projected_final_pixel_projection.png`는 마지막 픽셀 투영을 추가한 결과다.
+`stroke_projected_final_pixel_projection.png`는 `save_final_projection=True`를 명시한 경우에만 저장하는 마지막 픽셀 투영 결과다.
 후자는 명시적 후처리 결과이며 원시 생성 결과로 보고하지 않는다.
 8-bit PNG 저장에는 최대 1/255 수준의 잉크 양자화 오차를 허용한다.
 

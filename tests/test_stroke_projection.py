@@ -74,7 +74,8 @@ class StrokeProjectionTests(unittest.TestCase):
         pipe=Pipe()
         with tempfile.TemporaryDirectory() as temp:
             out=Path(temp)/'result'
-            report=run_projected_pair(pipe,Image.new('RGB',(32,32),'white'),constraints(),out,steps=4,strength=.5)
+            report=run_projected_pair(pipe,Image.new('RGB',(32,32),'white'),constraints(),out,steps=4,strength=.5,
+                start_from_noise=True,save_final_projection=True)
             self.assertTrue(torch.equal(calls[0],calls[2]))
             self.assertIsNone(pipe.unet.p.grad)
             self.assertEqual(report['backward_passes'],0)

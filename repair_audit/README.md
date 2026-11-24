@@ -44,6 +44,11 @@
 별도 생성 제어 분기: [획 단위 제약 투영·CPU 실험 안내](../docs/stroke_model/STROKE_PROJECTION.md).
 현재는 지도와 직접 투영을 확인하는 실험이며, 확산 생성 품질이나 획 분해의 이득은 미검증입니다.
 
+현재 통합 경로: [관측 두께로 목표 이미지 생성·정합·원본 재역확산](../docs/stroke_model/TARGET_GUIDED_REPAIR.md).
+`python -m repair_audit.target_guided_repair`로 저장 ZIP의 목표 이미지를 GPU 없이 확인할 수 있습니다.
+기존 2×2 생성과 획 추출을 유지하고, 획별 점수를 편집 계획으로 바꾸는 별도 API를 연결했습니다.
+기본 기하 진단 점수는 미검증이며 논문의 서예 평가 점수 재현이 아닙니다.
+
 저장소 루트에서 실행합니다.
 
 ```bash
