@@ -1,5 +1,8 @@
 # 획 보정 진단·수정 비교
 
+**[직선성 한 속성만 보정하는 코랩](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/attribute_straightness.ipynb)**
+— 글자 선택 → 생성·추출 → 획 그림 클릭 → 직선성 보정. 코드 셀 1→6. 기존 모델/가중치 유지.
+
 **[관측 두께·정답 스켈레톤 목표 기반 재역확산 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/target_guided_repair.ipynb)**
 — 이전 결과 ZIP 없이 원하는 기준 글자를 네 칸에 선택해 생성·추출·보정합니다. 코드 셀 1→7 실행.
 3번은 로컬 자료·썸네일 전처리, 4번은 선택입니다. 다른 글자는 선택을 바꾸고 6번만 다시 실행합니다.
