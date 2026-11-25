@@ -160,7 +160,7 @@ for i,w in enumerate(character_keys):w.observe(lambda change,i=i:source_changed(
 for i,b in enumerate(pin_buttons):b.on_click(lambda button,i=i:pin(i))
 catalog_page.observe(update_catalog,names='value')
 cards=[widgets.VBox([reference_selectors[i],character_keys[i],prototype_selectors[i],pin_buttons[i],identity_checks[i]]) for i in range(4)]
-display(widgets.VBox([widgets.HTML('입력은 원하는 폰트. 기준은 한 폰트에서 글자마다 1종만 잠그고 계속 공유합니다. 이미 잠긴 글자는 이름만 지정하세요.'),
+display(widgets.VBox([widgets.HTML('입력 row는 생성할 이미지입니다. 글자 이름을 입력해도 이미지가 바뀌지 않습니다.<br>그림에서 같은 글자인지 확인하고, 고정 기준에는 그 글자의 기준 획 row를 선택해 한 번 잠그세요. 이미 잠긴 글자는 이름만 지정합니다.'),
     *cards,bank_status,selection_preview,widgets.HTML('전체 글자 목록: 입력 폰트 및 최초 고정 기준 선택용'),
     catalog_page,catalog_preview]))
 update_selection();update_catalog()

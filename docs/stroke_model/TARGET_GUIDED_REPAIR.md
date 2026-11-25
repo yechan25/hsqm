@@ -57,6 +57,8 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 
 `notebooks/repair_audit/target_guided_repair.ipynb`를 Colab GPU 런타임에 열고 코드 셀 1→6을 실행한다.
 이전 stage 결과 ZIP은 필요 없다. 기존 best.pt와 원래 기준 글자/획 자료를 Drive에서 읽는다.
+1번 셀은 이전 세션 모듈 캐시를 비우고 포함된 소스를 다시 불러온다. 업데이트 후 import 오류가 나면
+최신 노트북을 다시 열고 1번부터 실행한다. 단순 파일 재작성만으로는 이미 import한 옛 모듈이 갱신되지 않는다.
 2번 셀의 CHECKPOINT, DATA_ROOT를 확인한다. best.pt 옆 학습 설정·selected_paths.csv·conversion_report를 사용해
 기존 기준 목록을 준비하며 전체 학습 NPZ 변환은 생략한다. 유효한 TRAIN_MANIFEST를 직접 지정할 수도 있다.
 

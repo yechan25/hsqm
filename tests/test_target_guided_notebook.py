@@ -7,6 +7,8 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -21,6 +23,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TargetNotebookTests(unittest.TestCase):
+    def test_setup_replaces_a_stale_import_from_another_runtime(self):
+        setup=next(''.join(c['source']) for c in self.notebook()['cells'] if c['cell_type']=='code')
+        start=setup.index('# A rerun must')
+        reload_code=setup[start:setup.index('\nimport torch',start)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for name,source in [('old','old_api=True\n'),('new','def lock_prototype(): return "new"\n')]:
+                package=root/name/'repair_audit';package.mkdir(parents=True)
+                (package/'__init__.py').write_text('')
+                (package/'selectable_target_inputs.py').write_text(source)
+            script='\n'.join(['import sys', 'from pathlib import Path',
+                'sys.path.insert(0,'+repr(str(root/'old'))+')',
+                'import repair_audit.selectable_target_inputs as stale',
+                'assert not hasattr(stale,"lock_prototype")',
+                'RUNTIME=Path('+repr(str(root/'new'))+')',reload_code,
+                'from repair_audit.selectable_target_inputs import lock_prototype',
+                'assert lock_prototype()=="new"'])
+            result=subprocess.run([sys.executable,'-c',script],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+
     def notebook(self):
         spec = importlib.util.spec_from_file_location('target_builder', ROOT/'notebooks/repair_audit/build_target_guided_repair.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)

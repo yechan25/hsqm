@@ -57,7 +57,14 @@ for name, code in RUNTIME_HELPERS.items():
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(code, encoding='utf-8')
     (target.parent/'__init__.py').touch()
-if str(RUNTIME) not in sys.path: sys.path.insert(0, str(RUNTIME))
+# A rerun must not keep modules imported by an older notebook in this session.
+import importlib
+for module_name in list(sys.modules):
+    if module_name.split('.')[0] in ('repair_audit', 'stroke_model', 'diffusion_model'):
+        del sys.modules[module_name]
+if str(RUNTIME) in sys.path: sys.path.remove(str(RUNTIME))
+sys.path.insert(0, str(RUNTIME))
+importlib.invalidate_caches()
 import torch
 from PIL import Image, ImageDraw
 from IPython.display import display
