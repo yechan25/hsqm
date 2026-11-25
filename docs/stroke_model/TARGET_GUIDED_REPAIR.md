@@ -53,6 +53,22 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 
 ## GPU 없이 목표·정합 확인
 
+### Colab 실행
+
+`notebooks/repair_audit/target_guided_repair.ipynb` 하나를 Colab GPU 런타임에 열고 코드 셀 1→5를 실행한다.
+외부 저장소 clone 없이 필요한 런타임 소스와 SHA256이 노트북에 포함돼 있다.
+2번 셀에서 기존 stage4 결과 ZIP을 업로드하고 Drive의 같은 best.pt 경로를 확인한다.
+기본은 group_000_page_001과 정상 대조군 2장이다. CASE_IDS=None이면 전체 사례를 실행한다.
+저장 추출이 없는 정상 대조군은 체크포인트를 이용해 새로 추출한다.
+결과에는 입력/목표/일반 재역확산/가이드 재역확산 비교, 원시 PNG, 계획, trace와 버전이 포함된다.
+사례 완료/오류/수동 중단 시 Drive에 checkpoint ZIP을 저장한다. 5번 셀에서 다운로드한다.
+같은 세션의 4번 재실행은 완료 사례를 건너뛰고 미완료 사례를 처음부터 계산한다.
+세션 간 중간 latent 재개는 지원하지 않는다. 실제 T4 실행·속도·품질은 미검증이다.
+
+노트북 재생성: `python notebooks/repair_audit/build_target_guided_repair.py`.
+
+### CPU CLI
+
 ```powershell
 python -m repair_audit.target_guided_repair --archive "C:/Users/freeg/Downloads/repair_stage4_20261123_132010_265667.zip" --output "C:/Users/freeg/Desktop/자율연구/output/target_repair_cpu" --case group_000_page_001
 ```
