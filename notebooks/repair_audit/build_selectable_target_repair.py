@@ -40,7 +40,7 @@ from diffusion_model.pilot_data import prepare_pilot_data
 from diffusion_model.score_pilot import training_catalog, load_catalog_reference
 from repair_audit.selectable_target_inputs import (prepare_selected_sheet, save_prototype,
     load_prototype, load_reference_image)
-from repair_audit.selection_cache import prepare_selection_cache,selection_thumbnails,thumbnail
+from repair_audit.selection_cache import prepare_selection_cache,selection_thumbnails,thumbnail,reference_identity
 '''
     cells=[]
     def add(kind,source):
@@ -106,6 +106,7 @@ for key in PROTOTYPE_RECORDS:
     condition,record = load_prototype(PROTOTYPE_BANK,key)
     PROTOTYPE_PREVIEWS[key] = thumbnail(condition['reference'])
 print('전처리 완료:',len(CATALOG),'개. 4번 선택 화면을 여세요.')
+print('문자명 자동 연결:',sum(bool(e['resolved_character']) for e in CATALOG),'/',len(CATALOG))
 ''')
     add('code', (ROOT/'notebooks/repair_audit/selection_ui.py').read_text(encoding='utf-8'))
     load=old_codes[2].replace('# 3.','# 5.')

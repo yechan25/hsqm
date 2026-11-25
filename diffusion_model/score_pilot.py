@@ -73,7 +73,8 @@ def training_catalog(manifest):
             continue
         seen.add(digest)
         catalog.append(dict(manifest_row=index + 1, path=str(path),
-                            char_id=str(row.get('char_id', '')), reference_sha256=digest))
+                            char_id=str(row.get('char_id', '')), reference_sha256=digest,
+                            source_image=str(row.get('source_image',''))))
     if not catalog:
         raise ValueError('No train references in this manifest')
     return catalog

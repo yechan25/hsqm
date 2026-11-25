@@ -4,12 +4,26 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from PIL import Image
-from repair_audit.selection_cache import prepare_selection_cache,selection_thumbnails
+from repair_audit.selection_cache import prepare_selection_cache,selection_thumbnails,reference_identity
 from repair_audit.selectable_target_inputs import save_prototype,load_prototype,prepare_selected_sheet
 from repair_audit.stage1 import load_conditions
 
 
 class SelectionPreparationTests(unittest.TestCase):
+    def test_character_metadata_and_real_filename_forms(self):
+        examples=[({'reference':'MaruBuri-SemiBold_가.png'},'가'),
+                  ({'reference':'가.png'},'가'),
+                  ({'reference':'NanumDaSiSiJagHae_넋.png'},'넋'),
+                  ({'source_image':r'C:\dataset\I_MaruBuri-SemiBold_가_10.png'},'가'),
+                  ({'reference':'가.png'},'가'),
+                  ({'char_id':'가','reference':'123.png'},'가'),
+                  ({'source_entry':{'reference':'개.png'}},'개')]
+        for entry,expected in examples:self.assertEqual(reference_identity(entry)['resolved_character'],expected)
+        for entry in [{'reference':'123.png','char_id':'123'}, {'reference':'글자목록.png'}]:
+            self.assertIsNone(reference_identity(entry)['resolved_character'])
+        conflict=reference_identity({'reference':'나.png','char_id':'가'})
+        self.assertIsNone(conflict['resolved_character']);self.assertTrue(conflict['character_identity_conflict'])
+
     def fixture(self,root):
         catalog=[]
         for i in range(2):

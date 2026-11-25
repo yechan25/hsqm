@@ -10,8 +10,9 @@ _prototype_images = dict(PROTOTYPE_PREVIEWS)
 # Preserve the existing selection contract consumed by cell 5.
 reference_selectors = [widgets.Combobox(options=LABELS, value=LABELS[min(i,len(LABELS)-1)],
     ensure_option=True, description='입력 row', layout=widgets.Layout(width='285px')) for i in range(4)]
-character_keys = [widgets.Combobox(options=list(_prototype_records), value='', description='글자 이름',continuous_update=False,
-    layout=widgets.Layout(width='285px')) for _ in range(4)]
+character_keys = [widgets.Combobox(options=list(_prototype_records),
+    value=CATALOG[min(i,len(CATALOG)-1)].get('resolved_character') or '',description='글자',continuous_update=False,
+    layout=widgets.Layout(width='285px')) for i in range(4)]
 prototype_selectors = [widgets.Combobox(options=LABELS, value='', ensure_option=True, description='기준 row',
     layout=widgets.Layout(width='285px')) for _ in range(4)]
 identity_checks = [widgets.Checkbox(value=False, description='입력과 기준이 같은 글자임을 확인',
@@ -66,6 +67,9 @@ def refresh_selection(change=None):
         pictures.append(widgets.VBox([widgets.HTML('입력 · row '+str(entry['manifest_row'])),
             widgets.Image(value=_thumb(entry),format='png',width=92,height=92)]))
     key = character_keys[index].value.strip()
+    known_character = entry.get('resolved_character') if entry else None
+    character_keys[index].disabled = bool(known_character)
+    character_keys[index].description = '글자(자동)' if known_character else '글자 이름'
     preview = None; caption = '기준 미선택'
     candidate = LABEL_TO_ENTRY.get(prototype_selectors[index].value)
     if candidate:
@@ -78,6 +82,15 @@ def refresh_selection(change=None):
         pictures.append(widgets.VBox([widgets.HTML(caption),
             widgets.Image(value=preview,format='png',width=92,height=92)]))
     else: pictures.append(widgets.HTML('오른쪽 그림에서<br>공통 기준을 선택하세요.'))
+    prototype_entry = candidate or _prototype_records.get(key,{}).get('reference',{})
+    prototype_character = reference_identity(prototype_entry)['resolved_character']
+    if known_character and prototype_character:
+        identity_checks[index].value = known_character==prototype_character==key
+        identity_checks[index].disabled = True
+        identity_checks[index].description = '동일 글자 자동 확인' if identity_checks[index].value else '입력과 기준의 글자가 다릅니다'
+    else:
+        identity_checks[index].disabled = False
+        identity_checks[index].description = '입력과 기준이 같은 글자임을 확인'
     advanced = widgets.Accordion(children=[widgets.VBox([reference_selectors[index],prototype_selectors[index]])],
         selected_index=None,layout=widgets.Layout(width='300px'))
     advanced.set_title(0,'row 직접 입력 (선택 사항)')
@@ -132,6 +145,10 @@ def render_gallery(change=None):
     global _page
     query = _applied_query
     entries = [e for label,e in LABEL_TO_ENTRY.items() if query in label.casefold()]
+    source_entry = LABEL_TO_ENTRY.get(reference_selectors[slot_picker.value].value,{})
+    character = source_entry.get('resolved_character')
+    if pick_mode.value=='prototype' and character:
+        entries = [e for e in entries if e.get('resolved_character')==character]
     pages = max(1,(len(entries)+7)//8); _page = min(_page,pages-1)
     children = []
     for entry in entries[_page*8:(_page+1)*8]:
@@ -141,7 +158,8 @@ def render_gallery(change=None):
         children.append(widgets.VBox([widgets.Image(value=_thumb(entry),format='png',width=92,height=92),button],
             layout=widgets.Layout(border='1px solid #ccc',padding='3px',align_items='center')))
     gallery.children = tuple(children)
-    page_label.value = f'{_page+1} / {pages} · {len(entries)}개'
+    suffix = f' · {character}의 기준만 표시' if pick_mode.value=='prototype' and character else ''
+    page_label.value = f'{_page+1} / {pages} · {len(entries)}개'+suffix
     previous_page.disabled = _page==0; next_page.disabled = _page==pages-1
 
 
@@ -153,7 +171,12 @@ def move_page(delta):
 def changed(index, key_changed=False):
     identity_checks[index].value = False
     if key_changed: prototype_selectors[index].value=''
+    else:
+        entry=LABEL_TO_ENTRY.get(reference_selectors[index].value,{})
+        character=entry.get('resolved_character')
+        if character and character_keys[index].value!=character:character_keys[index].value=character
     refresh_selection()
+    if pick_mode.value=='prototype':render_gallery()
 
 
 def filter_changed(change):
@@ -161,16 +184,23 @@ def filter_changed(change):
     _page = 0; _applied_query = search.value.strip().casefold(); render_gallery()
 
 
+def mode_changed(change):
+    global _page, _applied_query
+    _page=0;_applied_query='';search.value='';render_gallery()
+
+
 for i,widget in enumerate(reference_selectors):widget.observe(lambda change,i=i:changed(i),names='value')
 for i,widget in enumerate(character_keys):widget.observe(lambda change,i=i:changed(i,True),names='value')
 for widget in prototype_selectors:widget.observe(refresh_selection,names='value')
 for i,button in enumerate(pin_buttons):button.on_click(lambda b,i=i:pin(i))
 slot_picker.observe(refresh_selection,names='value')
+slot_picker.observe(render_gallery,names='value')
+pick_mode.observe(mode_changed,names='value')
 _applied_query = ''
 search_button.on_click(filter_changed)
 previous_page.on_click(lambda b:move_page(-1)); next_page.on_click(lambda b:move_page(1))
 display(widgets.VBox([
-    widgets.HTML('① 칸 선택 → ② 입력/공통 기준 선택 → ③ 그림 아래 버튼 클릭. 기준은 실행 전에 언제든 변경 가능합니다.'),
+    widgets.HTML('① 칸 선택 → ② 입력/공통 기준 선택 → ③ 그림 아래 버튼 클릭. 글자 이름은 파일 정보에서 자동 연결합니다. 기준은 실행 전에 변경 가능합니다.'),
     summary,
     widgets.HBox([
         widgets.VBox([slot_picker,pick_mode,active_form],layout=widgets.Layout(width='310px',margin='0 12px 0 0')),
