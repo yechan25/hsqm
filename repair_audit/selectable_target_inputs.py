@@ -65,6 +65,26 @@ def lock_prototype(catalog,row,key,bank):
     return record
 
 
+def save_prototype(catalog,row,key,bank):
+    """Editable experiment setup. Existing experiment NPZ snapshots stay intact."""
+    key=str(key).strip()
+    if not key:raise ValueError('글자 이름을 먼저 입력하세요.')
+    entry=next((e for e in catalog if e['manifest_row']==row),None)
+    if entry is None:raise ValueError('Unknown prototype row')
+    reference,strokes=load_catalog_reference(entry)
+    root=Path(bank);root.mkdir(parents=True,exist_ok=True)
+    index_path=root/'index.json'
+    index=json.loads(index_path.read_text(encoding='utf-8')) if index_path.is_file() else {}
+    record=dict(character=key,manifest_row=row,sha256=_signature(reference,strokes),reference=entry)
+    name=hashlib.sha256(key.encode()).hexdigest()+'.npz'
+    partial_data=root/(name+'.partial')
+    with partial_data.open('wb') as stream:np.savez_compressed(stream,reference=reference,strokes=strokes)
+    partial_data.replace(root/name)
+    index[key]=record
+    partial_index=root/'index.partial.json';json_write(partial_index,index);partial_index.replace(index_path)
+    return record
+
+
 def prepare_selected_sheet(catalog, rows, output, *, prototype_keys, prototype_bank, size=576):
     rows=list(rows)
     by_row={entry['manifest_row']:entry for entry in catalog}

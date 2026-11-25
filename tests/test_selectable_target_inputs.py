@@ -43,7 +43,7 @@ class SelectableTests(unittest.TestCase):
 
     def test_six_cells_no_experiment_zip_and_exact_embedded_sources(self):
         codes=[''.join(c['source']) for c in self.notebook()['cells'] if c['cell_type']=='code']
-        self.assertEqual(len(codes),6)
+        self.assertEqual(len(codes),7)
         for code in codes:
             compile(code,'<colab>','exec')
             tree=ast.parse(code)
@@ -79,7 +79,7 @@ class SelectableTests(unittest.TestCase):
 
     def test_new_selection_run_without_model_reload_preserves_previous_run(self):
         code=next(''.join(c['source']) for c in self.notebook()['cells']
-                  if c['cell_type']=='code' and '# 5. 현재 선택' in ''.join(c['source']))
+                  if c['cell_type']=='code' and '# 6. 현재 선택' in ''.join(c['source']))
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);catalog=self.fixture(root);selected=[1,2,3,4];calls=[]
             bank=root/'bank';lock_prototype(catalog,1,'same character',bank)
