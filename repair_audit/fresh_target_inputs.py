@@ -60,7 +60,12 @@ def generate_fresh_cases(pipe, seed_cases, output, *, strengths=(.65,), seeds=(1
         if on_saved: on_saved(item,cases)
     for control in controls:
         with Image.open(Path(control['directory'])/'input.png') as old: size=old.width
-        initial=canonical_sheet(load_conditions(control['directory']),size)
+        # A source font image may differ from the ONE fixed repair prototype.
+        generation_image=Path(control['directory'])/'generation_reference_sheet.png'
+        if generation_image.is_file():
+            with Image.open(generation_image) as image: initial=image.convert('RGB').copy()
+            if initial.size!=(size,size):raise ValueError('Invalid generation reference dimensions')
+        else: initial=canonical_sheet(load_conditions(control['directory']),size)
         group=control['case_id'].removesuffix('_normal_control')
         save(initial,control,group+'_normal_control',control=True,strength=None,seed=None)
         for si,strength in enumerate(strengths):

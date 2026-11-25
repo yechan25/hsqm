@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 import torch
 
-from repair_audit.selectable_target_inputs import prepare_selected_sheet
+from repair_audit.selectable_target_inputs import prepare_selected_sheet,lock_prototype,load_prototype
 from repair_audit.fresh_target_inputs import generate_fresh_cases
 from repair_audit.stage1 import file_hash, json_write, load_conditions
 
@@ -64,13 +64,17 @@ class SelectableTests(unittest.TestCase):
     def test_freeze_order_duplicates_and_invalid_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);catalog=self.fixture(root)
-            cases=prepare_selected_sheet(catalog,[4,1,4,2],root/'chosen',size=32)
+            bank=root/'bank'
+            for row in range(1,5):lock_prototype(catalog,row,str(row),bank)
+            cases=prepare_selected_sheet(catalog,[4,1,4,2],root/'chosen',size=32,
+                prototype_keys=['4','1','4','2'],prototype_bank=bank)
             self.assertEqual(cases[0]['original_rows'],[4,1,4,2])
             conditions=load_conditions(cases[0]['directory'])
             self.assertTrue(np.array_equal(conditions[0]['strokes'],conditions[2]['strokes']))
             self.assertFalse(np.array_equal(conditions[0]['strokes'],conditions[1]['strokes']))
             for rows in [[1,2],[1,2,3,99]]:
-                with self.assertRaises(ValueError):prepare_selected_sheet(catalog,rows,root/'invalid')
+                with self.assertRaises(ValueError):prepare_selected_sheet(catalog,rows,root/'invalid',
+                    prototype_keys=['1']*4,prototype_bank=bank)
                 self.assertFalse((root/'invalid').exists())
 
     def test_new_selection_run_without_model_reload_preserves_previous_run(self):
@@ -78,6 +82,7 @@ class SelectableTests(unittest.TestCase):
                   if c['cell_type']=='code' and '# 5. 현재 선택' in ''.join(c['source']))
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);catalog=self.fixture(root);selected=[1,2,3,4];calls=[]
+            bank=root/'bank';lock_prototype(catalog,1,'same character',bank)
             checkpoint=root/'best.pt';checkpoint.write_bytes(b'fixture')
             manifest=root/'manifest.json';manifest.write_text('[]')
             class LocalPath:
@@ -99,6 +104,7 @@ class SelectableTests(unittest.TestCase):
             env=dict(Path=LocalPath,datetime=datetime,json=json,np=np,Image=Image,ImageDraw=ImageDraw,
                 gc=gc,shutil=shutil,traceback=traceback,time=time,torch=fake_torch,display=lambda x:None,
                 selected_rows=lambda:list(selected),CATALOG=catalog,CANVAS_SIZE=32,EXTRACTOR_SIZE=8,
+                selected_keys=lambda:['same character']*4,PROTOTYPE_BANK=bank,
                 prepare_selected_sheet=prepare_selected_sheet,load_conditions=load_conditions,
                 SCORES_JSON='',SOURCE_HASHES={},PREPARATION={},CHECKPOINT=checkpoint,TRAIN_MANIFEST=manifest,
                 MODEL_ID='fixture',REVISION='fixture',GENERATION_STRENGTHS=[.65],GENERATION_SEEDS=[100],
@@ -115,6 +121,43 @@ class SelectableTests(unittest.TestCase):
             second_rows=json.loads((second/'selected_reference/selection.json').read_text())['selected_rows']
             self.assertEqual(first_rows,[1,2,3,4]);self.assertEqual(second_rows,[4,4,1,1])
             self.assertEqual(len(list((root/'drive').glob('*.zip'))),2)
+
+    def test_same_fixed_strokes_across_source_fonts_and_no_switching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);catalog=self.fixture(root);bank=root/'bank'
+            record=lock_prototype(catalog,1,'glyph A',bank)
+            with self.assertRaisesRegex(ValueError,'already locked'):
+                lock_prototype(catalog,2,'glyph A',bank)
+            # Input-font stroke annotations are not even required by this API.
+            for row in [2,4]:
+                path=Path(catalog[row-1]['path'])
+                with np.load(path) as data: reference=data['reference'].copy()
+                np.savez(path,reference=reference)
+            controls=[]
+            for i,row in enumerate([2,4]):
+                control=prepare_selected_sheet(catalog,[row]*4,root/f'font{i}',size=32,
+                    prototype_keys=['glyph A']*4,prototype_bank=bank)[0]
+                controls.append(control)
+            a=load_conditions(controls[0]['directory']);b=load_conditions(controls[1]['directory'])
+            self.assertTrue(all(np.array_equal(x['strokes'],y['strokes']) for x,y in zip(a,b)))
+            self.assertTrue(all(np.array_equal(x['reference'],y['reference']) for x,y in zip(a,b)))
+            self.assertEqual(controls[0]['prototype_records'][0]['sha256'],record['sha256'])
+            with Image.open(Path(controls[0]['directory'])/'input.png') as x, Image.open(Path(controls[1]['directory'])/'input.png') as y:
+                self.assertFalse(np.array_equal(np.asarray(x),np.asarray(y)))
+            calls=[]
+            def pipe(**kwargs):
+                calls.append(np.asarray(kwargs['image']).copy())
+                return SimpleNamespace(images=[kwargs['image'].copy()])
+            generate_fresh_cases(pipe,controls[:1],root/'generatedA',seeds=[1])
+            generate_fresh_cases(pipe,controls[1:],root/'generatedB',seeds=[1])
+            self.assertFalse(np.array_equal(calls[0],calls[1]))
+            for directory in [root/'generatedA',root/'generatedB']:
+                with np.load(directory/'group_000_page_100/condition_1.npz') as c:
+                    self.assertTrue(np.array_equal(c['strokes'],a[0]['strokes']))
+            # Changing bank contents cannot silently change the fixed reference.
+            path=bank/(hashlib.sha256('glyph A'.encode()).hexdigest()+'.npz')
+            np.savez(path,reference=np.zeros((1,8,8)),strokes=np.zeros((1,8,8)))
+            with self.assertRaisesRegex(ValueError,'changed'):load_prototype(bank,'glyph A')
 
 
 if __name__=='__main__':unittest.main()
