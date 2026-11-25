@@ -51,18 +51,28 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 외부 점수 JSON 형식: `{"case_id": [[획1점수, ...], [둘째칸...], [셋째칸...], [넷째칸...]]}`.
 `--scores`로 전달한다. 획 순서는 저장된 condition_N.npz의 strokes 순서와 같아야 한다.
 
-## GPU 없이 목표·정합 확인
+## 실행 방법
 
 ### Colab 실행
 
 `notebooks/repair_audit/target_guided_repair.ipynb` 하나를 Colab GPU 런타임에 열고 코드 셀 1→5를 실행한다.
 외부 저장소 clone 없이 필요한 런타임 소스와 SHA256이 노트북에 포함돼 있다.
 2번 셀에서 기존 stage4 결과 ZIP을 업로드하고 Drive의 같은 best.pt 경로를 확인한다.
-기본은 group_000_page_001과 정상 대조군 2장이다. CASE_IDS=None이면 전체 사례를 실행한다.
-저장 추출이 없는 정상 대조군은 체크포인트를 이용해 새로 추출한다.
+기본 INPUT_MODE='fresh', CASE_IDS=None으로 ZIP의 3개 기준 그룹을 사용한다.
+정답 reference를 2×2로 합성한 후 시트 전체를 공동 img2img 생성한다.
+생성 강도 .65, seeds 100/101, nominal60 steps로 6개 새 생성 시트와 3개 정상 기준을 보정한다.
+기존 오류 생성물이나 보정 결과를 재오염시키지 않는다. 잘못된/빈/필터된 출력도 제외하지 않고 기록한다.
+생성 단계에는 가이드를 사용하지 않으며, 보정 단계의 두 arm에만 동일 초기 상태 비교를 적용한다.
+다른 글자 시험 범위는 ZIP에 있는 기준 획으로 제한된다. 3개 그룹은 다양한 실제 환경의 대표 표본이 아니다.
+더 작은 시험은 CASE_IDS=['group_000_page_001'], 더 많은 강도 비교는 GENERATION_STRENGTHS=[.45,.65]로 바꾼다.
+INPUT_MODE='archive'이면 기존 ZIP 생성물로 돌아간다. 새 생성물에는 기존 추출 마스크를 재사용하지 않는다.
+생성은 fp16 VAE를 사용하는 기존 표준 img2img 호출, 보정은 fp32 VAE 커스텀 샘플러로 구분한다.
+정상 시트를 포함해 필요한 추출은 같은 체크포인트를 이용한다.
 결과에는 입력/목표/일반 재역확산/가이드 재역확산 비교, 원시 PNG, 계획, trace와 버전이 포함된다.
-사례 완료/오류/수동 중단 시 Drive에 checkpoint ZIP을 저장한다. 5번 셀에서 다운로드한다.
-같은 세션의 4번 재실행은 완료 사례를 건너뛰고 미완료 사례를 처음부터 계산한다.
+fresh 모드의 실제 사례 결과는 fresh_inputs/<case_id>/에 있으며 generation_report.json에 생성 설정이 남는다.
+생성 시트 저장 및 보정 사례 완료/오류/수동 중단 시 Drive에 checkpoint ZIP을 저장한다. 5번 셀에서 다운로드한다.
+같은 세션의 4번 재실행은 전체 생성 묶음이 완료됐다면 재사용하고 보정 완료 사례도 건너뛴다.
+생성 묶음이 중단됐다면 해당 생성 시도 폴더를 보관하고 전체 묶음을 다시 만든다. 부분 latent는 복구하지 않는다.
 세션 간 중간 latent 재개는 지원하지 않는다. 실제 T4 실행·속도·품질은 미검증이다.
 
 노트북 재생성: `python notebooks/repair_audit/build_target_guided_repair.py`.

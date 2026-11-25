@@ -69,7 +69,7 @@ class TargetNotebookTests(unittest.TestCase):
             env=dict(Path=Path,datetime=datetime,shutil=shutil,zipfile=zipfile,json=json,
                 gc=gc,torch=torch,time=time,traceback=traceback,Image=Image,ImageDraw=ImageDraw,
                 display=lambda x:None,OUTPUT=output,DRIVE_RESULT_DIR=str(Path(tmp)/'drive'),
-                CASES=cases,ARCHIVE=archive,extractor=Extractor(),pipe=object(),
+                CASES=cases,ARCHIVE=archive,INPUT_MODE='archive',extractor=Extractor(),pipe=object(),
                 _cached_masks=lambda z,c,s,cond:[np.ones((1,8,8))]*4 if c['case_id']=='generated' else None,
                 extract_sheet_masks=extract,load_conditions=lambda root:[],repair_generated_sheet=repair,
                 SCORES={},PLAN_CONFIG={},TargetPlanConfig=lambda **k:None,
@@ -81,6 +81,29 @@ class TargetNotebookTests(unittest.TestCase):
             for case in cases:self.assertTrue((Path(case['directory'])/'diffusion_comparison.png').is_file())
             exec(code,env)
             self.assertEqual(len(calls),2)
+            # Exercise the fresh-generation branch too, including VAE dtype
+            # switching, new extraction, and reuse on a repeated cell run.
+            from repair_audit.fresh_target_inputs import generate_fresh_cases
+            seed=dict(cases[1],case_id='group_000_normal_control',kind='normal_control')
+            for i in range(1,5):
+                ref=np.zeros((1,8,8),np.float32);ref[0,2:5,2:5]=1
+                np.savez(Path(seed['directory'])/f'condition_{i}.npz',reference=ref,strokes=ref)
+            fresh_output=Path(tmp)/'fresh_results';fresh_output.mkdir()
+            dtypes=[];generation_calls=[]
+            class Pipe:
+                vae=SimpleNamespace(to=lambda **kw:dtypes.append(kw['dtype']))
+                def __call__(self,**kw):
+                    generation_calls.append(kw)
+                    return SimpleNamespace(images=[kw['image'].copy()])
+            env.update(OUTPUT=fresh_output,INPUT_MODE='fresh',SEED_CASES=[seed],
+                GENERATION_STRENGTHS=[.65],GENERATION_SEEDS=[100],GENERATION_STEPS=60,
+                generate_fresh_cases=generate_fresh_cases,pipe=Pipe())
+            exec(code,env)
+            self.assertEqual(len(calls),4);self.assertEqual(len(fallback),3)
+            self.assertEqual(dtypes,[torch.float16,torch.float32])
+            self.assertEqual(len(generation_calls),1)
+            exec(code,env)
+            self.assertEqual(len(calls),4);self.assertEqual(len(generation_calls),1)
 
 
 if __name__ == '__main__': unittest.main()

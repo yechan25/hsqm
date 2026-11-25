@@ -10,6 +10,7 @@ MODULES = [
     'stroke_model/source_structure.py', 'stroke_model/target_stroke_plan.py',
     'diffusion_model/stroke_projected_diffusion.py', 'repair_audit/stage1.py',
     'repair_audit/target_guided_repair.py',
+    'repair_audit/fresh_target_inputs.py',
 ]
 
 
@@ -25,9 +26,11 @@ def build():
 
     add('markdown', '''# 관측 두께·정답 스켈레톤으로 목표 이미지를 만들고 재역확산
 
-GPU 런타임(T4 가능)에서 **코드 셀 1→5** 실행. 학습·새 2×2 생성 없이 기존 생성물을 사용합니다.
+GPU 런타임(T4 가능)에서 **코드 셀 1→5** 실행. 기본은 정답 2×2 시트를 새로 확산·역확산한 뒤 보정합니다.
 2번 셀에서 **repair_stage4_20261123_132010_265667.zip**을 업로드하세요.
-기존 Drive의 best.pt도 필요합니다. 기본은 첫 생성 시트와 대응 정상 시트 **2장**만 비교합니다.
+기존 Drive의 best.pt도 필요합니다. ZIP은 기준 획을 가져오는 데 사용합니다.
+기본: 3개 글자 그룹 × seed 100/101 = 생성 6장(24칸) + 정상 대조군 3장, 총 **9장** 보정.
+strength .65에서 오류가 반드시 발생하지는 않습니다. 생성 실패/정상 결과도 제외하지 않습니다.
 
 획 추출 → 관측 두께 → 정답 스켈레톤 렌더링 → 글자 공통 affine → 획별 수정 강도 → 원본에서 재역확산.
 비교는 입력 / 목표(확산 아님) / 일반 재역확산 / 목표 가이드 재역확산입니다.
@@ -62,6 +65,7 @@ from google.colab import drive, files
 from repair_audit.stage1 import read_archive, load_conditions, file_hash, json_write
 from repair_audit.target_guided_repair import repair_generated_sheet, _cached_masks, extract_sheet_masks
 from stroke_model.target_stroke_plan import TargetPlanConfig
+from repair_audit.fresh_target_inputs import generate_fresh_cases, canonical_sheet
 if not torch.cuda.is_available():
     raise RuntimeError('런타임 유형을 GPU로 바꾼 뒤 다시 실행하세요.')
 print('GPU:', torch.cuda.get_device_name(0))
@@ -69,7 +73,9 @@ print('GPU:', torch.cuda.get_device_name(0))
     add('code', setup)
     add('markdown', '''## 입력과 설정
 - ARCHIVE를 비워 두면 ZIP 업로드 창이 열립니다. best.pt는 업로드하지 말고 Drive 경로를 확인하세요.
-- CASE_IDS 기본값은 첫 시트이며 정상 대조군이 자동 포함됩니다. 전체 비교는 None으로 변경합니다.
+- INPUT_MODE='fresh'는 정답 시트에서 새 생성, 'archive'는 ZIP의 기존 생성물을 사용합니다.
+- CASE_IDS=None은 ZIP의 3개 그룹 전체. 빠른 시험은 ['group_000_page_001']로 바꾸세요.
+- GENERATION_STRENGTHS/SEEDS로 오류 강도와 반복 수를 조절합니다. 생성 설정과 보정 설정은 별개입니다.
 - SCORES_JSON은 선택 사항: `{case_id: [[첫칸 획별 0~100점], [...], [...], [...]]}`.
 - 기존 ZIP의 저장 추출을 우선 사용하고, 없는 정상 대조군 등은 같은 체크포인트로 추출합니다.
 - Drive에 사례 완료/실패/수동 중단 시 ZIP을 백업합니다. 강제 연결 종료는 마지막 백업까지만 보존됩니다.
@@ -77,7 +83,11 @@ print('GPU:', torch.cuda.get_device_name(0))
     add('code', '''# 2. 입력 선택 및 Drive 연결
 ARCHIVE = ''
 CHECKPOINT = '/content/drive/Shareddrives/2026 자율연구/HSQM/v2_topology_runs/20261104_214705_208224/best.pt'
-CASE_IDS = ['group_000_page_001']  # None이면 전체 생성 시트 + 정상 대조군
+INPUT_MODE = 'fresh'  # 'archive': 이전 ZIP 생성물만 사용
+CASE_IDS = None  # 빠른 시험: ['group_000_page_001']
+GENERATION_STRENGTHS = [.65]  # 강도 비교 시 [.45, .65] (사례 수 증가)
+GENERATION_SEEDS = [100, 101]
+GENERATION_STEPS = 60
 SCORES_JSON = ''  # 선택: Drive의 획별 점수 JSON 경로
 DRIVE_RESULT_DIR = '/content/drive/MyDrive/HSQM_target_guided_results'
 REPAIR_STEPS, REPAIR_STRENGTH, REPAIR_SEED = 60, .25, 2026
@@ -95,6 +105,8 @@ if not Path(CHECKPOINT).is_file():
     raise FileNotFoundError('CHECKPOINT를 기존 best.pt 경로로 수정한 뒤 2번을 다시 실행하세요.')
 OUTPUT = Path('/content')/('target_guided_repair_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
 CASES, EXPERIMENT = read_archive(ARCHIVE, OUTPUT, CASE_IDS, include_controls=True)
+if INPUT_MODE not in ('fresh','archive'): raise ValueError('INPUT_MODE는 fresh 또는 archive')
+SEED_CASES = list(CASES)
 if file_hash(CHECKPOINT) != EXPERIMENT['checkpoint_sha256'].lower():
     raise ValueError('기존 ZIP과 best.pt SHA256이 다릅니다.')
 SCORES = json.loads(Path(SCORES_JSON).read_text(encoding='utf-8')) if SCORES_JSON else {}
@@ -102,10 +114,18 @@ json_write(OUTPUT/'runtime_manifest.json', dict(source_hashes=SOURCE_HASHES,
     model_id=MODEL_ID, revision=REVISION, checkpoint_sha256=file_hash(CHECKPOINT),
     input_archive_sha256=file_hash(ARCHIVE), torch_version=torch.__version__,
     gpu=torch.cuda.get_device_name(0), scores=SCORES,
-    settings=dict(steps=REPAIR_STEPS, strength=REPAIR_STRENGTH, seed=REPAIR_SEED, plan=PLAN_CONFIG)))
-for case in CASES:
+    settings=dict(steps=REPAIR_STEPS, strength=REPAIR_STRENGTH, seed=REPAIR_SEED, plan=PLAN_CONFIG,
+        input_mode=INPUT_MODE,generation_strengths=GENERATION_STRENGTHS,
+        generation_seeds=GENERATION_SEEDS,generation_steps=GENERATION_STEPS)))
+PREVIEW_CASES = [c for c in CASES if c['kind']=='normal_control'] if INPUT_MODE=='fresh' else CASES
+for case in PREVIEW_CASES:
     print(case['case_id'], case['kind'])
-    display(Image.open(Path(case['directory'])/'input.png').resize((288,288)))
+    with Image.open(Path(case['directory'])/'input.png') as old:
+        preview = canonical_sheet(load_conditions(case['directory']),old.width) if INPUT_MODE=='fresh' else old.copy()
+    display(preview.resize((288,288)))
+if INPUT_MODE=='fresh':
+    n = len(PREVIEW_CASES)
+    print('예정: 새 생성',n*len(GENERATION_STRENGTHS)*len(GENERATION_SEEDS),'장 + 정상',n,'장')
 print('저장 위치:', OUTPUT)
 ''')
     add('code', '''# 3. 기존 획 추출기와 SD1.5 로딩 (추가 학습 없음)
@@ -142,6 +162,33 @@ def save_snapshot():
         shutil.copy2(archive, destination/Path(archive).name)
     return archive
 
+# 기존 오류 생성물이 아닌 정답 기준 시트에서 새 입력을 생성합니다.
+if INPUT_MODE == 'fresh':
+    generation_root = OUTPUT/'fresh_inputs'
+    generation_report = generation_root/'generation_report.json'
+    expected_count = sum(c['kind']=='normal_control' for c in SEED_CASES)*(1+len(GENERATION_STRENGTHS)*len(GENERATION_SEEDS))
+    cached_generation = json.loads(generation_report.read_text(encoding='utf-8')) if generation_report.is_file() else None
+    if cached_generation and len(cached_generation['cases']) == expected_count:
+        if (cached_generation['strengths'] != GENERATION_STRENGTHS or cached_generation['seeds'] != GENERATION_SEEDS
+                or cached_generation['steps'] != GENERATION_STEPS):
+            raise ValueError('생성 설정이 바뀌었습니다. 2번부터 새로 실행하세요.')
+        CASES = cached_generation['cases']
+        print('완료된 새 생성 결과 재사용:',len(CASES))
+    else:
+        if generation_root.exists():
+            generation_root.rename(OUTPUT/('interrupted_generation_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
+        try:
+            # 표준 img2img 입력은 fp16 UNet/text embedding dtype을 따릅니다.
+            # 기존 커스텀 보정 샘플러는 이후 fp32 VAE로 돌립니다.
+            pipe.vae.to(dtype=torch.float16)
+            CASES = generate_fresh_cases(pipe,SEED_CASES,generation_root,
+                strengths=GENERATION_STRENGTHS,seeds=GENERATION_SEEDS,steps=GENERATION_STEPS,
+                on_saved=lambda case,cases: save_snapshot())
+        finally:
+            pipe.vae.to(dtype=torch.float32)
+            save_snapshot()
+    print('새 생성 + 정상 대조군:',len(CASES),'장. 이제 각 시트를 보정합니다.')
+
 def show_comparison(case):
     root = Path(case['directory']); repair = root/'target_repair'
     panels = [('input', root/'input.png'), ('target: NOT diffusion', repair/'target_plan/aligned_target.png'),
@@ -162,7 +209,9 @@ for case in CASES:
             result.rename(root/('interrupted_attempt_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
         source = Image.open(root/'input.png').convert('RGB')
         conditions = load_conditions(root)
-        with zipfile.ZipFile(ARCHIVE) as z: masks = _cached_masks(z,case,source,conditions)
+        if INPUT_MODE == 'archive':
+            with zipfile.ZipFile(ARCHIVE) as z: masks = _cached_masks(z,case,source,conditions)
+        else: masks = None  # 새 생성물에 옛 입력의 추출 마스크를 재사용하지 않음
         if masks is None:
             print(case['case_id'],'저장 추출 없음: 기존 모델로 추출',flush=True)
             try:
@@ -204,6 +253,8 @@ for case in CASES:
 print('현재 완료',sum((Path(c['directory'])/'target_repair/pipeline.json').is_file() for c in CASES),'/',len(CASES))
 ''')
     add('markdown', '''## 결과 확인
+- fresh 모드의 실제 입력과 보정 결과는 fresh_inputs/<case_id>/에 있습니다.
+- generation_report.json에 생성 강도·시드·안전 필터 여부가 기록됩니다. 기존 ZIP 입력 폴더와 구분해서 보세요.
 - diffusion_comparison.png에서 정상 대조군도 함께 확인하세요. 목표 이미지는 확산 결과가 아닙니다.
 - 획이 얇아지는지, 정상 획이 변하는지, 오류 획이 목표 위치로 이동하는지, 배경이 자연스러운지 봅니다.
 - target_plan/plan.json에 관측 두께·정합·점수·수정 강도가 있습니다.
