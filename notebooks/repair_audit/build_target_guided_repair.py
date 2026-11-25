@@ -272,7 +272,7 @@ files.download(archive)
                     metadata=dict(colab=dict(name='target_guided_repair.ipynb'),
                                   accelerator='GPU', kernelspec=dict(name='python3',display_name='Python 3')))
     for index, cell in enumerate(cells): cell['id'] = f'target-repair-{index}'
-    path = ROOT/'notebooks/repair_audit/target_guided_repair.ipynb'
+    path = ROOT/'notebooks/repair_audit/target_guided_repair_archive.ipynb'
     path.write_text(json.dumps(notebook,ensure_ascii=False,indent=1),encoding='utf-8')
     return path
 

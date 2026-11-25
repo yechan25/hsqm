@@ -1,7 +1,8 @@
 # 획 보정 진단·수정 비교
 
 **[관측 두께·정답 스켈레톤 목표 기반 재역확산 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/target_guided_repair.ipynb)**
-— stage4 ZIP의 기준 획으로 새 2×2 시트를 공동 생성하고 보정합니다. 기본 3그룹×2시드 + 정상 3장. 코드 셀 1→5 실행.
+— 이전 결과 ZIP 없이 원하는 기준 글자를 네 칸에 선택해 생성·추출·보정합니다. 코드 셀 1→6 실행.
+다른 글자는 선택을 바꾸고 5번만 다시 실행하면 됩니다. 기존 best.pt와 기준 글자/획 자료를 사용합니다.
 실제 GPU 품질 검증 전이며 기본 획 점수는 미검증 기하 지표입니다.
 
 기존 획 추출기와 생성 결과를 그대로 사용해 VAE 왕복, 일반 재역확산,

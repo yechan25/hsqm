@@ -55,27 +55,28 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 
 ### Colab 실행
 
-`notebooks/repair_audit/target_guided_repair.ipynb` 하나를 Colab GPU 런타임에 열고 코드 셀 1→5를 실행한다.
-외부 저장소 clone 없이 필요한 런타임 소스와 SHA256이 노트북에 포함돼 있다.
-2번 셀에서 기존 stage4 결과 ZIP을 업로드하고 Drive의 같은 best.pt 경로를 확인한다.
-기본 INPUT_MODE='fresh', CASE_IDS=None으로 ZIP의 3개 기준 그룹을 사용한다.
-정답 reference를 2×2로 합성한 후 시트 전체를 공동 img2img 생성한다.
-생성 강도 .65, seeds 100/101, nominal60 steps로 6개 새 생성 시트와 3개 정상 기준을 보정한다.
-기존 오류 생성물이나 보정 결과를 재오염시키지 않는다. 잘못된/빈/필터된 출력도 제외하지 않고 기록한다.
-생성 단계에는 가이드를 사용하지 않으며, 보정 단계의 두 arm에만 동일 초기 상태 비교를 적용한다.
-다른 글자 시험 범위는 ZIP에 있는 기준 획으로 제한된다. 3개 그룹은 다양한 실제 환경의 대표 표본이 아니다.
-더 작은 시험은 CASE_IDS=['group_000_page_001'], 더 많은 강도 비교는 GENERATION_STRENGTHS=[.45,.65]로 바꾼다.
-INPUT_MODE='archive'이면 기존 ZIP 생성물로 돌아간다. 새 생성물에는 기존 추출 마스크를 재사용하지 않는다.
-생성은 fp16 VAE를 사용하는 기존 표준 img2img 호출, 보정은 fp32 VAE 커스텀 샘플러로 구분한다.
-정상 시트를 포함해 필요한 추출은 같은 체크포인트를 이용한다.
-결과에는 입력/목표/일반 재역확산/가이드 재역확산 비교, 원시 PNG, 계획, trace와 버전이 포함된다.
-fresh 모드의 실제 사례 결과는 fresh_inputs/<case_id>/에 있으며 generation_report.json에 생성 설정이 남는다.
-생성 시트 저장 및 보정 사례 완료/오류/수동 중단 시 Drive에 checkpoint ZIP을 저장한다. 5번 셀에서 다운로드한다.
-같은 세션의 4번 재실행은 전체 생성 묶음이 완료됐다면 재사용하고 보정 완료 사례도 건너뛴다.
-생성 묶음이 중단됐다면 해당 생성 시도 폴더를 보관하고 전체 묶음을 다시 만든다. 부분 latent는 복구하지 않는다.
-세션 간 중간 latent 재개는 지원하지 않는다. 실제 T4 실행·속도·품질은 미검증이다.
+`notebooks/repair_audit/target_guided_repair.ipynb`를 Colab GPU 런타임에 열고 코드 셀 1→6을 실행한다.
+이전 stage 결과 ZIP은 필요 없다. 기존 best.pt와 원래 기준 글자/획 자료를 Drive에서 읽는다.
+2번 셀의 CHECKPOINT, DATA_ROOT를 확인한다. best.pt 옆 학습 설정·selected_paths.csv·conversion_report를 사용해
+기존 기준 목록을 준비하며 전체 학습 NPZ 변환은 생략한다. 유효한 TRAIN_MANIFEST를 직접 지정할 수도 있다.
 
-노트북 재생성: `python notebooks/repair_audit/build_target_guided_repair.py`.
+3번 셀에서 네 칸을 각각 선택한다. 이름이 있으면 검색하고, 없으면 전체 목록 그림의 row 번호로 고른다.
+미리보기는 왼쪽 위/오른쪽 위/왼쪽 아래/오른쪽 아래 순서이며 같은 글자 반복 선택도 허용한다.
+선택 범위는 기존 training catalog의 정답 기준 획이 있는 글자다. 임의의 모든 한글에 대한 획 생성기는 아니다.
+4번은 모델 로딩, 5번은 현재 선택을 고정해 새 생성·추출·보정, 6번은 가장 최근 결과 다운로드다.
+다른 글자를 시험할 때는 선택을 바꾸고 5번만 다시 실행한다. 모델 재로딩이나 stage 결과가 필요 없다.
+
+기본은 strength .65, seeds100/101, nominal60 steps로 생성 2장 + 정상 1장이다.
+GENERATION_STRENGTHS=[.45,.65]처럼 강도 비교를 늘릴 수 있다. 모든 생성물을 보존하며 OCR로 거르지 않는다.
+2×2 전체를 공동 img2img 생성하고, 생성에는 보정 가이드를 사용하지 않는다.
+이후 두 보정 arm은 동일 초기 latent를 사용한다. 생성 fp16 VAE, 보정 fp32 VAE를 구분한다.
+실행마다 고유 폴더를 만들고 선택 row·기준 획·체크포인트 해시·생성 설정·원시 결과·trace를 저장한다.
+실제 사례 결과는 fresh_inputs/<case_id>/, 선택 내용은 selected_reference/selection.json에 있다.
+생성 시트 저장 및 보정 사례 완료/실패/수동 중단 시 Drive에 ZIP을 백업한다.
+5번 재실행은 새 실험이며 중간 latent/세션 간 재개는 지원하지 않는다. 실제 T4 속도·품질은 미검증이다.
+
+노트북 재생성: `python notebooks/repair_audit/build_selectable_target_repair.py`.
+이전 ZIP 기반 실행은 별도 `target_guided_repair_archive.ipynb`에 보존한다.
 
 ### CPU CLI
 
