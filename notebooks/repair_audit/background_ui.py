@@ -1,40 +1,53 @@
-# 5. 배경 설정
+# @title 5. 배경 설정 — 옵션을 고른 뒤 이 셀을 실행하세요
 from io import BytesIO
-from PIL import ImageOps
+from PIL import ImageOps, UnidentifiedImageError
 
-background_mode = widgets.ToggleButtons(options=[('기본 배경','default'),('단색','solid'),('그림','image')])
-background_color = widgets.ColorPicker(description='색상',value='#e8dcc8')
-background_upload = widgets.FileUpload(accept='image/*',multiple=False,description='그림 선택')
-background_options = widgets.VBox()
+BACKGROUND_MODE = '기본 배경' # @param ["기본 배경", "단색", "그림"]
+BACKGROUND_COLOR = '#e8dcc8' # @param {type:"string"}
 
+_prepared_background = None
+_background_details = None
 
-def refresh_background_options(change=None):
-    options = {'default':(), 'solid':(background_color,), 'image':(background_upload,)}
-    background_options.children = options[background_mode.value]
+if BACKGROUND_MODE == '단색':
+    try:
+        _prepared_background = Image.new('RGB',(CANVAS_SIZE,CANVAS_SIZE),BACKGROUND_COLOR)
+    except ValueError as exc:
+        raise ValueError('색상 코드를 #e8dcc8 같은 형식으로 입력하세요.') from exc
+    _background_details = {'mode':'solid','color':BACKGROUND_COLOR}
+elif BACKGROUND_MODE == '그림':
+    print('배경으로 사용할 이미지 파일을 하나 선택하세요.')
+    uploaded = files.upload()
+    if len(uploaded)!=1:
+        raise ValueError('배경 이미지를 한 장 선택하고 5번 셀을 다시 실행하세요.')
+    name, contents = next(iter(uploaded.items()))
+    try:
+        with Image.open(BytesIO(contents)) as image:
+            rgba = ImageOps.exif_transpose(image).convert('RGBA')
+            opaque = Image.alpha_composite(Image.new('RGBA',rgba.size,'white'),rgba).convert('RGB')
+            _prepared_background = ImageOps.fit(opaque,(CANVAS_SIZE,CANVAS_SIZE),method=Image.Resampling.LANCZOS)
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError('이 파일을 이미지로 열 수 없습니다. PNG나 JPG를 골라 주세요.') from exc
+    _background_details = {'mode':'image','filename':name,'placement':'center_crop_to_sheet'}
+    print(f'배경 적용 완료 · {name}')
+elif BACKGROUND_MODE == '기본 배경':
+    _background_details = {'mode':'default'}
+else:
+    raise ValueError('배경은 기본 배경, 단색, 그림 중 하나를 고르세요.')
 
 
 def selected_background(size):
-    mode = background_mode.value
-    if mode=='default':
-        return None,dict(mode=mode)
-    if mode=='solid':
-        return Image.new('RGB',(size,size),background_color.value),dict(mode=mode,color=background_color.value)
-    uploaded = background_upload.value
-    if not uploaded:
-        raise ValueError('5번 셀에서 배경 그림을 선택하세요.')
-    if isinstance(uploaded,dict):
-        name, item = next(iter(uploaded.items()))  # ipywidgets 7
-    else:
-        item = uploaded[0]
-        name = item['name']
-    with Image.open(BytesIO(bytes(item['content']))) as image:
-        rgba=ImageOps.exif_transpose(image).convert('RGBA')
-        opaque=Image.alpha_composite(Image.new('RGBA',rgba.size,'white'),rgba).convert('RGB')
-        fitted=ImageOps.fit(opaque,(size,size),method=Image.Resampling.LANCZOS)
-    return fitted,dict(mode=mode,filename=name,placement='center_crop_to_sheet')
+    if _background_details is None:
+        raise ValueError('5번 셀에서 배경 설정을 완료하세요.')
+    if _prepared_background is None:
+        return None, _background_details.copy()
+    image = _prepared_background
+    if image.size != (size,size):
+        image = image.resize((size,size),Image.Resampling.LANCZOS)
+    return image.copy(), _background_details.copy()
 
 
-background_mode.observe(refresh_background_options,names='value')
-refresh_background_options()
-display(widgets.VBox([background_mode,background_options,
-    widgets.HTML('그림은 2×2 시트 크기에 맞춰 가운데를 잘라 씁니다. 글자는 어두운 잉크로 올라갑니다.')]))
+if _prepared_background is None:
+    print('기본 배경 사용. 6번 셀로 진행하세요.')
+else:
+    display(_prepared_background.resize((256,256)))
+    print('위 배경이 준비됐습니다. 6번 셀로 진행하세요.')
