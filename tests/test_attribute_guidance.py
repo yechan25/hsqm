@@ -6,7 +6,7 @@ import sys
 import unittest
 import numpy as np
 from PIL import Image
-from stroke_model.attribute_guidance import straightness_plan
+from stroke_model.attribute_guidance import mapped_stroke_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -20,25 +20,28 @@ class AttributeTests(unittest.TestCase):
         source=Image.fromarray(np.uint8(np.tile(1-masks.max(0),(2,2))*255)).convert('RGB')
         return source,[masks.copy() for _ in range(4)]
 
-    def test_straightens_only_selected_region_and_keeps_endpoint_direction(self):
-        source,masks=self.fixture();guide=straightness_plan(source,masks,0,0,amount=1)
+    def test_mapping_uses_template_shape_and_keeps_observed_endpoints(self):
+        source,masks=self.fixture();canonical=masks[0].copy()
+        canonical[0]=0;canonical[0,4:28,9:12]=1
+        conditions=[dict(strokes=canonical)]*4
+        guide=mapped_stroke_plan(source,masks,conditions,0,0)
         r=guide.report
-        self.assertLess(r['tortuosity_after'],r['tortuosity_before'])
-        self.assertAlmostEqual(r['tortuosity_after'],1.,places=5)
-        self.assertTrue(np.allclose(r['endpoint_positions_before'],r['endpoint_positions_after']))
+        self.assertTrue(np.allclose(r['observed_endpoints'],r['mapped_endpoints']))
+        curved=mapped_stroke_plan(source,masks,[dict(strokes=masks[0])]*4,0,0)
+        self.assertNotEqual(guide.target.tobytes(),curved.target.tobytes())
+        self.assertEqual(r['representative_width'],curved.report['representative_width'])
         original=np.asarray(source,np.float32)/255
         self.assertTrue(np.array_equal(guide.target[~guide.roi],original[~guide.roi]))
         self.assertTrue(np.array_equal(guide.target[32:],original[32:]))
         self.assertTrue(np.array_equal(guide.target[:32,23:28],original[:32,23:28]))
-        unchanged=straightness_plan(source,masks,0,0,amount=0)
-        self.assertFalse(unchanged.roi.any());self.assertTrue(np.array_equal(unchanged.target,original))
 
     def test_closed_and_empty_strokes_are_rejected(self):
         source,masks=self.fixture();yy,xx=np.indices((32,32))
+        conditions=[dict(strokes=masks[0].copy())]*4
         masks[0][0]=(abs(np.hypot(xx-15,yy-15)-8)<1.5)
-        with self.assertRaises(ValueError):straightness_plan(source,masks,0,0)
+        with self.assertRaises(ValueError):mapped_stroke_plan(source,masks,conditions,0,0)
         masks[0][0]=0
-        with self.assertRaises(ValueError):straightness_plan(source,masks,0,0)
+        with self.assertRaises(ValueError):mapped_stroke_plan(source,masks,conditions,0,0)
 
     def test_notebook_has_six_compilable_cells_and_shared_sampler(self):
         folder=ROOT/'notebooks/repair_audit';sys.path.insert(0,str(folder))
@@ -52,7 +55,7 @@ class AttributeTests(unittest.TestCase):
         for code in codes:compile(code,'<attribute_colab>','exec')
         self.assertIn('steps=120,strength=.25',codes[4])
         self.assertIn('save_final_projection=False',codes[4])
-        self.assertNotIn('straightness_plan(',codes[2])  # generation/extraction is separate
+        self.assertIn('GUIDE=mapped_stroke_plan(',codes[3])
         tree=ast.parse(codes[0])
         helpers=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign)
             and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='RUNTIME_HELPERS')
