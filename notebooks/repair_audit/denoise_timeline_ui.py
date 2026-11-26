@@ -18,13 +18,14 @@ step_slider = widgets.IntSlider(description='단계', min=0, continuous_update=F
                                 layout=widgets.Layout(width='95%'))
 frame_preview = widgets.Image(format='png')
 frame_label = widgets.HTML()
-raw_view = widgets.Checkbox(value=False, description='색 정리·배경 복원 전 보기')
+raw_view = widgets.Checkbox(value=False, description='잉크 색 정리·배경 복원 전 보기')
 
 
 @lru_cache(maxsize=3)
 def presentation_data(reverse):
     with np.load(reverse.parent/'target_plan/guide.npz',allow_pickle=False) as guide:
-        return guide['source'],guide['weights']>0
+        background=guide['background'] if 'background' in guide.files else None
+        return guide['source'],guide['weights']>0,background
 
 
 def display_frame(change=None):
@@ -51,10 +52,17 @@ def display_frame(change=None):
     with Image.open(reverse/name) as panel:
         shown=panel.convert('RGB')
     if ink_mode and not raw_view.value and 0<index<=len(frames):
-        source,mask=presentation_data(reverse)
+        source,mask,background=presentation_data(reverse)
         pixels=np.rint(source*255).astype(np.uint8)
-        gray=np.rint(np.asarray(shown)[mask].mean(axis=1)).astype(np.uint8)
-        pixels[mask]=gray[:,None]
+        if background is None:
+            gray=np.rint(np.asarray(shown)[mask].mean(axis=1)).astype(np.uint8)
+            pixels[mask]=gray[:,None]
+        else:
+            from stroke_model.ink_target_guide import finish_ink_rgb
+            def tensor(array):return torch.from_numpy(array.copy()).permute(2,0,1)[None]
+            finished=finish_ink_rgb(tensor(np.asarray(shown,np.float32)/255),tensor(source),
+                torch.from_numpy(mask)[None,None],tensor(background))
+            pixels=np.rint(finished[0].permute(1,2,0).numpy()*255).astype(np.uint8)
         shown=Image.fromarray(pixels)
     preview.paste(shown.resize((384,384)),(0,0))
     with Image.open(reverse.parent/'target_plan/aligned_target.png') as target:

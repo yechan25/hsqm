@@ -41,7 +41,9 @@ def save_plan(guide,rendered,output):
     preview=guide.project(torch.tensor(guide.source.copy()).permute(2,0,1)[None])
     image(preview[0].permute(1,2,0).numpy()).save(out/'cpu_blend_diagnostic_only.png')
     for gi,item in enumerate(rendered,1):np.savez_compressed(out/f'glyph_{gi}_target_strokes.npz',**item)
-    np.savez_compressed(out/'guide.npz',target=guide.target,weights=guide.weights,source=guide.source)
+    arrays=dict(target=guide.target,weights=guide.weights,source=guide.source)
+    if getattr(guide,'background',None) is not None:arrays['background']=guide.background
+    np.savez_compressed(out/'guide.npz',**arrays)
     json_write(out/'plan.json',dict(**guide.report,guidance=guide.metadata,diffusion_run=False))
     ink_only = guide.metadata['kind']=='glyph_ink_projection'
     names=[('generated input','input.png'),('width-rendered + aligned target','aligned_target.png'),
@@ -56,9 +58,12 @@ def save_plan(guide,rendered,output):
 
 def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_masks=None,scores=None,
                            config=None,registration_config=None,steps=60,strength=.25,seed=2026,
-                           prompt='',negative_prompt='',progress=None,save_step_images=False,ink_only=False):
+                           prompt='',negative_prompt='',progress=None,save_step_images=False,ink_only=False,
+                           background_image=None):
     """Call directly after existing generate_cases / generation of a 2x2 sheet."""
     from diffusion_model.stroke_projected_diffusion import run_projected_pair
+    if background_image is not None and not ink_only:
+        raise ValueError('Background compositing requires ink-only guidance')
     masks=cached_masks if cached_masks is not None else extract_sheet_masks(source,conditions,extractor)
     if ink_only and registration_config is None:
         from stroke_model.source_structure import SourceConfig
@@ -67,7 +72,9 @@ def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_mask
                                     registration_config=registration_config)
     if ink_only:
         from stroke_model.ink_target_guide import InkTargetGuide
-        guide=InkTargetGuide(guide,rendered)
+        guide=InkTargetGuide(guide,rendered,background_image)
+        if background_image is not None:
+            source=Image.fromarray(np.rint(guide.source*255).astype('uint8'))
     root=Path(output);root.mkdir(parents=True,exist_ok=False)
     save_plan(guide,rendered,root/'target_plan')
     report=run_projected_pair(pipe,source,guide,root/'reverse',steps=steps,strength=strength,seed=seed,

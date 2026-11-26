@@ -140,5 +140,22 @@ class TargetPlanTests(unittest.TestCase):
             self.assertGreater(ink_guide.diagnostics(source_tensor)['extra_ink'],0)
             self.assertEqual(ink_guide.diagnostics(projected),dict(missing_ink=0,extra_ink=0))
 
+            # A varying colored background must survive the same repair path.
+            texture=np.zeros_like(color)
+            texture[...,0]=np.arange(texture.shape[1])+140
+            texture[...,1]=200
+            texture[...,2]=235
+            textured_root=Path(temp)/'textured'
+            textured,_=repair_generated_sheet(pipe,None,colored_source,conditions,textured_root,
+                cached_masks=masks,steps=4,strength=.5,ink_only=True,background_image=Image.fromarray(texture))
+            outside=~textured.roi
+            with Image.open(textured_root/'reverse/input.png') as im:
+                self.assertTrue(np.array_equal(np.asarray(im)[outside],texture[outside]))
+            with Image.open(textured_root/'reverse/stroke_projected.png') as im:
+                self.assertTrue(np.array_equal(np.asarray(im)[outside],texture[outside]))
+            self.assertTrue(np.array_equal(textured.target[20,3],texture[20,3].astype(np.float32)/255))
+            with np.load(textured_root/'target_plan/guide.npz') as saved:
+                self.assertTrue(np.array_equal(saved['background'],texture.astype(np.float32)/255))
+
 
 if __name__=='__main__':unittest.main()

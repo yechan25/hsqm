@@ -53,8 +53,11 @@ from repair_audit.selection_cache import prepare_selection_cache,selection_thumb
             source=source.replace('1→7','1→8').replace('7번은 가장 최근 실행을 다운로드','8번은 가장 최근 실행을 다운로드')
             source=source.replace('7. ZIP 다운로드','7. 단계별 보기 → 8. ZIP 다운로드')
         if ink_only and kind=='markdown':
+            source=source.replace('1→8','1→9').replace('5. 모델 로딩 → 6. 생성·보정 → 7. 단계별 보기 → 8. ZIP 다운로드',
+                '5. 배경 → 6. 모델 로딩 → 7. 생성·보정 → 8. 단계별 보기 → 9. ZIP 다운로드')
+            source=source.replace('6번','7번').replace('8번은 가장 최근','9번은 가장 최근')
             source=source.replace('점수는 외부 평가 점수가 없을 때 미검증 기하 지표를 씁니다. 실제 GPU 품질은 미검증입니다.',
-                '정합된 획 마스크대로 글자 영역에서 잉크를 채우고 지웁니다. 결과에는 영역 밖의 원본 픽셀과 영역 안의 무채색 역확산 출력을 사용합니다.')
+                '선택한 배경은 2×2 생성 후 합성합니다. 정합된 획 마스크대로 잉크를 채우고 지우며, 글자 영역 밖은 입력 픽셀을 유지합니다.')
         source=source.strip()+'\n'
         if kind=='code':ast.parse(source)
         cells.append(dict(cell_type=kind,metadata={},source=source.splitlines(keepends=True),
@@ -122,7 +125,12 @@ for key in PROTOTYPE_RECORDS:
 print('전처리 완료:',len(CATALOG),'개. 4번 선택 화면을 여세요.')
 print('문자명 자동 연결:',sum(bool(e['resolved_character']) for e in CATALOG),'/',len(CATALOG))
 ''')
-    add('code', (ROOT/'notebooks/repair_audit/selection_ui.py').read_text(encoding='utf-8'))
+    selection=(ROOT/'notebooks/repair_audit/selection_ui.py').read_text(encoding='utf-8')
+    if ink_only:
+        selection=selection.replace('선택 후 5번 모델 로딩 → 6번 실행. 다음 실험은 선택을 바꾸고 6번만 실행.',
+                                    '선택 후 5번 배경 설정 → 6번 모델 로딩 → 7번 실행.')
+    add('code',selection)
+    if ink_only:add('code',(ROOT/'notebooks/repair_audit/background_ui.py').read_text(encoding='utf-8'))
     load=old_codes[2].replace('# 3.','# 5.')
     load="if not torch.cuda.is_available():\n    raise RuntimeError('모델 실행에는 GPU 런타임이 필요합니다. 전처리·선택은 CPU에서도 가능합니다.')\n"+load
     start=load.index('for case in CASES:')
@@ -135,6 +143,7 @@ print('문자명 자동 연결:',sum(bool(e['resolved_character']) for e in CATA
     load=load.replace("('torch','diffusers','transformers','timm','numpy','scipy','scikit-image')})",
                       "('torch','diffusers','transformers','timm','numpy','scipy','scikit-image')}")
     load=load.replace("print('로딩 완료. 4번 실행.')","print('로딩 완료. 6번 실행.')")
+    if ink_only:load=load.replace('# 5.','# 6.').replace('로딩 완료. 6번 실행.','로딩 완료. 7번 실행.')
     add('code',load)
     run=old_codes[3]
     run=run.replace('# 4. 두 경로 비교. 같은 세션에서 재실행하면 완료 사례는 건너뜀',
@@ -182,13 +191,21 @@ print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로�
         run=run.replace('현재 결과는 7번으로 다운로드','현재 결과는 8번으로 다운로드')
     if ink_only:
         run=run.replace("SCORES = json.loads(Path(SCORES_JSON).read_text(encoding='utf-8')) if SCORES_JSON else {}",'SCORES = {}')
-        run=run.replace('save_step_images=True)', 'save_step_images=True,ink_only=True)')
+        run=run.replace('save_step_images=True)', 'save_step_images=True,ink_only=True,background_image=BACKGROUND_IMAGE)')
+        run=run.replace('# @title 6.','# @title 7.').replace('# 6. 현재 선택','# 7. 현재 선택')
+        run=run.replace('현재 결과는 8번으로 다운로드하세요. 6번 재실행','현재 결과는 9번으로 다운로드하세요. 7번 재실행')
+        run=run.replace('SELECTED_ROWS = selected_rows()', 'BACKGROUND_IMAGE, BACKGROUND_SETTINGS = selected_background(CANVAS_SIZE)\nSELECTED_ROWS = selected_rows()')
+        run=run.replace('OUTPUT.mkdir()','OUTPUT.mkdir()\nif BACKGROUND_IMAGE is not None: BACKGROUND_IMAGE.save(OUTPUT/\'background.png\')',1)
+        run=run.replace('scores=SCORES,gpu=', 'scores=SCORES,background=BACKGROUND_SETTINGS,gpu=')
+        run=run.replace("('input', root/'input.png')", "('input', repair/'reverse/input.png')")
         run=run.replace("        selected = sum(s['edit_strength']>0 for s in guide.report['strokes'])\n",'')
         run=run.replace("print('수정 대상:',selected,'/',len(guide.report['strokes']), '획; 실제 스텝:',report['actual_steps'])",
                         "print('글자 보정 영역:',int(guide.roi.sum()),'픽셀; 실제 스텝:',report['actual_steps'])")
     add('code',run)
     if timeline:
-        add('code',(ROOT/'notebooks/repair_audit/denoise_timeline_ui.py').read_text(encoding='utf-8'))
+        viewer=(ROOT/'notebooks/repair_audit/denoise_timeline_ui.py').read_text(encoding='utf-8')
+        if ink_only:viewer=viewer.replace('# 7.','# 8.').replace('6번 셀','7번 셀')
+        add('code',viewer)
     add('markdown','''## 결과 확인과 다음 선택
 - fresh_inputs/<case_id>/diffusion_comparison.png: 입력 / 목표 / 일반 재역확산 / 가이드 재역확산.
 - 정상 대조군도 함께 보고 획 두께·원본 스타일·오류 수정·배경 조화를 확인하세요.
@@ -199,7 +216,7 @@ print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로�
 - 6번을 다시 실행하면 현재 선택으로 **새 실험**을 시작합니다. 이전 실행은 별도 폴더·ZIP으로 남습니다.
 - 7번은 가장 최근 실행을 다운로드합니다. 중간 latent나 세션 간 재개는 지원하지 않습니다.
 ''')
-    add('code',old_codes[4].replace('# 5.','# 8.' if timeline else '# 7.'))
+    add('code',old_codes[4].replace('# 5.','# 9.' if ink_only else ('# 8.' if timeline else '# 7.')))
     nb=dict(base,cells=cells)
     for i,cell in enumerate(cells):cell['id']=f'selectable-target-{i}'
     filename='target_guided_repair_timeline.ipynb' if timeline else 'target_guided_repair.ipynb'
