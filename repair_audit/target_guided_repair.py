@@ -60,6 +60,9 @@ def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_mask
     """Call directly after existing generate_cases / generation of a 2x2 sheet."""
     from diffusion_model.stroke_projected_diffusion import run_projected_pair
     masks=cached_masks if cached_masks is not None else extract_sheet_masks(source,conditions,extractor)
+    if ink_only and registration_config is None:
+        from stroke_model.source_structure import SourceConfig
+        registration_config=SourceConfig(rotation=0.,shear=0.)
     guide,rendered=build_target_plan(source,conditions,masks,scores=scores,config=config,
                                     registration_config=registration_config)
     if ink_only:

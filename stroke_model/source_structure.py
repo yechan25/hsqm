@@ -35,7 +35,7 @@ class SourceConfig:
     def __post_init__(self):
         if any(not math.isfinite(x) for x in asdict(self).values()):
             raise ValueError('Source settings must be finite')
-        if (self.translation <= 0 or self.rotation <= 0 or self.shear <= 0
+        if (self.translation <= 0 or self.rotation < 0 or self.shear < 0
                 or not 0 < self.scale_min <= 1 <= self.scale_max or self.scale_min == self.scale_max
                 or self.registration_iterations < 1 or self.registration_prior < 0
                 or self.extra_radius < 0 or self.extra_transition <= 0 or self.junction_tolerance < 0):
