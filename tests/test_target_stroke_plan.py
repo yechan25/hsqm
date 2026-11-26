@@ -120,5 +120,25 @@ class TargetPlanTests(unittest.TestCase):
             before=np.mean((guide.source-guide.target)**2);after=np.mean((output-guide.target)**2)
             self.assertLess(after,before)
 
+            ink_root=Path(temp)/'ink_run'
+            color=np.asarray(source).copy()
+            color[0,0]=[250,255,255]
+            color[20,2:6]=[180,180,180]  # Extra ink outside the canonical silhouette.
+            colored_source=Image.fromarray(color)
+            ink_guide,ink_report=repair_generated_sheet(pipe,None,colored_source,conditions,ink_root,
+                cached_masks=masks,steps=4,strength=.5,ink_only=True,save_step_images=True)
+            self.assertEqual(ink_report['guide']['kind'],'glyph_ink_projection')
+            self.assertTrue((ink_root/'reverse/stroke_projected_raw.png').is_file())
+            self.assertEqual(len(ink_report['step_images']),2)
+            with Image.open(ink_root/'reverse/stroke_projected.png') as im:
+                result=np.asarray(im)
+                self.assertTrue(np.array_equal(result[~ink_guide.roi],color[~ink_guide.roi]))
+                self.assertTrue(np.all(np.ptp(result[ink_guide.roi],axis=1)==0))
+            source_tensor=torch.tensor(ink_guide.source.copy()).permute(2,0,1)[None]
+            projected=ink_guide.project(source_tensor)
+            self.assertGreater(ink_guide.diagnostics(source_tensor)['missing_ink'],0)
+            self.assertGreater(ink_guide.diagnostics(source_tensor)['extra_ink'],0)
+            self.assertEqual(ink_guide.diagnostics(projected),dict(missing_ink=0,extra_ink=0))
+
 
 if __name__=='__main__':unittest.main()

@@ -9,7 +9,8 @@ from build_target_guided_repair import build as build_archive
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def build(*,timeline=False):
+def build(*,timeline=False,ink_only=False):
+    timeline = timeline or ink_only
     base=build_archive(write=False)
     old_codes=[''.join(c['source']) for c in base['cells'] if c['cell_type']=='code']
     setup=old_codes[0]
@@ -20,6 +21,9 @@ def build(*,timeline=False):
                  'stroke_model/convert_reference_csv.py','stroke_model/prepare_stroke_zips.py',
                  'stroke_model/reference_only_data.py','repair_audit/selectable_target_inputs.py',
                  'repair_audit/selection_cache.py']:
+        helpers[name]=(ROOT/name).read_text(encoding='utf-8')
+    if ink_only:
+        name='stroke_model/ink_target_guide.py'
         helpers[name]=(ROOT/name).read_text(encoding='utf-8')
     hashes={name:hashlib.sha256(code.encode()).hexdigest() for name,code in helpers.items()}
     setup='\n'.join('RUNTIME_HELPERS='+repr(helpers) if line.startswith('RUNTIME_HELPERS=') else
@@ -48,6 +52,9 @@ from repair_audit.selection_cache import prepare_selection_cache,selection_thumb
         if timeline:
             source=source.replace('1→7','1→8').replace('7번은 가장 최근 실행을 다운로드','8번은 가장 최근 실행을 다운로드')
             source=source.replace('7. ZIP 다운로드','7. 단계별 보기 → 8. ZIP 다운로드')
+        if ink_only and kind=='markdown':
+            source=source.replace('점수는 외부 평가 점수가 없을 때 미검증 기하 지표를 씁니다. 실제 GPU 품질은 미검증입니다.',
+                '정합된 획 마스크대로 글자 영역에서 잉크를 채우고 지웁니다. 결과에는 영역 밖의 원본 픽셀과 영역 안의 무채색 역확산 출력을 사용합니다.')
         source=source.strip()+'\n'
         if kind=='code':ast.parse(source)
         cells.append(dict(cell_type=kind,metadata={},source=source.splitlines(keepends=True),
@@ -98,6 +105,7 @@ SOURCE_CATALOG = CATALOG
 print('기준 목록:',len(CATALOG),'개. 3번 전처리를 실행하세요.')
 '''
     if timeline:config=config.replace('REPAIR_STEPS, REPAIR_STRENGTH, REPAIR_SEED = 60, .25, 2026\n','')
+    if ink_only:config='\n'.join(line for line in config.splitlines() if not line.startswith('SCORES_JSON'))
     add('code',config)
     add('code','''# 3. 선택용 전처리. 원본 읽기·로컬 자료 복사·썸네일 생성은 여기서 한 번 수행
 def preparation_progress(done,total):
@@ -172,6 +180,12 @@ print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로�
         run=run.replace("negative_prompt=case.get('negative_prompt',''),progress=progress)",
             "negative_prompt=case.get('negative_prompt',''),progress=progress,save_step_images=True)")
         run=run.replace('현재 결과는 7번으로 다운로드','현재 결과는 8번으로 다운로드')
+    if ink_only:
+        run=run.replace("SCORES = json.loads(Path(SCORES_JSON).read_text(encoding='utf-8')) if SCORES_JSON else {}",'SCORES = {}')
+        run=run.replace('save_step_images=True)', 'save_step_images=True,ink_only=True)')
+        run=run.replace("        selected = sum(s['edit_strength']>0 for s in guide.report['strokes'])\n",'')
+        run=run.replace("print('수정 대상:',selected,'/',len(guide.report['strokes']), '획; 실제 스텝:',report['actual_steps'])",
+                        "print('글자 보정 영역:',int(guide.roi.sum()),'픽셀; 실제 스텝:',report['actual_steps'])")
     add('code',run)
     if timeline:
         add('code',(ROOT/'notebooks/repair_audit/denoise_timeline_ui.py').read_text(encoding='utf-8'))
@@ -189,10 +203,11 @@ print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로�
     nb=dict(base,cells=cells)
     for i,cell in enumerate(cells):cell['id']=f'selectable-target-{i}'
     filename='target_guided_repair_timeline.ipynb' if timeline else 'target_guided_repair.ipynb'
+    if ink_only:filename='target_guided_repair_ink.ipynb'
     nb['metadata']['colab']['name']=filename
     path=ROOT/'notebooks/repair_audit'/filename
     path.write_text(json.dumps(nb,ensure_ascii=False,indent=1),encoding='utf-8')
     return path
 
 
-if __name__=='__main__':print(build(timeline='--timeline' in sys.argv))
+if __name__=='__main__':print(build(timeline='--timeline' in sys.argv,ink_only='--ink-only' in sys.argv))

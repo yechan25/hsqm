@@ -43,8 +43,10 @@ def save_plan(guide,rendered,output):
     for gi,item in enumerate(rendered,1):np.savez_compressed(out/f'glyph_{gi}_target_strokes.npz',**item)
     np.savez_compressed(out/'guide.npz',target=guide.target,weights=guide.weights,source=guide.source)
     json_write(out/'plan.json',dict(**guide.report,guidance=guide.metadata,diffusion_run=False))
+    ink_only = guide.metadata['kind']=='glyph_ink_projection'
     names=[('generated input','input.png'),('width-rendered + aligned target','aligned_target.png'),
-           ('score-controlled edit strength','edit_strength.png'),('CPU blend: NOT diffusion','cpu_blend_diagnostic_only.png')]
+           ('glyph edit mask' if ink_only else 'score-controlled edit strength','edit_strength.png'),
+           ('ink projection preview' if ink_only else 'CPU blend: NOT diffusion','cpu_blend_diagnostic_only.png')]
     cell=288;canvas=Image.new('RGB',(cell*4,cell+35),'white');draw=ImageDraw.Draw(canvas)
     for i,(title,name) in enumerate(names):
         draw.text((i*cell+5,9),title,fill='black')
@@ -54,20 +56,24 @@ def save_plan(guide,rendered,output):
 
 def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_masks=None,scores=None,
                            config=None,registration_config=None,steps=60,strength=.25,seed=2026,
-                           prompt='',negative_prompt='',progress=None,save_step_images=False):
+                           prompt='',negative_prompt='',progress=None,save_step_images=False,ink_only=False):
     """Call directly after existing generate_cases / generation of a 2x2 sheet."""
     from diffusion_model.stroke_projected_diffusion import run_projected_pair
     masks=cached_masks if cached_masks is not None else extract_sheet_masks(source,conditions,extractor)
     guide,rendered=build_target_plan(source,conditions,masks,scores=scores,config=config,
                                     registration_config=registration_config)
+    if ink_only:
+        from stroke_model.ink_target_guide import InkTargetGuide
+        guide=InkTargetGuide(guide,rendered)
     root=Path(output);root.mkdir(parents=True,exist_ok=False)
     save_plan(guide,rendered,root/'target_plan')
     report=run_projected_pair(pipe,source,guide,root/'reverse',steps=steps,strength=strength,seed=seed,
         prompt=prompt,negative_prompt=negative_prompt,start_from_noise=False,save_final_projection=False,
         progress=progress,save_step_images=save_step_images)
     json_write(root/'pipeline.json',dict(stages=['existing_2x2_generation','stroke_extraction',
-        'observed_width_rendering','shared_glyph_affine','score_to_edit_plan','source_initialized_rediffusion'],
-        score_source='provided' if scores is not None else 'uncalibrated_geometry_proxy_v1',
+        'observed_width_rendering','shared_glyph_affine','ink_projection' if ink_only else 'score_to_edit_plan',
+        'source_initialized_rediffusion'],
+        score_source='none_for_ink_projection' if ink_only else ('provided' if scores is not None else 'uncalibrated_geometry_proxy_v1'),
         new_training=False,source_content_used=report['source_content_used'],final_pixel_replacement=False,
         plan='target_plan/plan.json',diffusion='reverse/report.json'))
     return guide,report

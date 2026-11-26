@@ -30,6 +30,7 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
         Image.fromarray(np.rint(x[0].permute(1,2,0).cpu().numpy()*255).clip(0,255).astype('uint8')).save(path)
     traces={}
     step_images=[]
+    finish=getattr(constraints,'finish',None)
     if save_step_images: (out/'steps').mkdir()
     with torch.no_grad():
         positive,negative=pipe.encode_prompt(prompt,device,1,True,negative_prompt=negative_prompt)
@@ -57,7 +58,10 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
                     prediction=decode(base.pred_original_sample)
                     target=constraints.project(prediction)
                     # Re-encoding is not an exact pixel projection. Record both.
-                    corrected=base.pred_original_sample+gate*(encode(target)-base.pred_original_sample)
+                    # In ink mode subtract the unedited RGB round-trip so only
+                    # the requested edit contributes to the latent correction.
+                    reference_latent=encode(prediction) if finish is not None else base.pred_original_sample
+                    corrected=base.pred_original_sample+gate*(encode(target)-reference_latent)
                     previous=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
                     alpha=(scheduler.alphas_cumprod[previous] if previous>=0 else scheduler.final_alpha_cumprod).to(latent)
                     latent=latent+alpha.sqrt()*(corrected-base.pred_original_sample)
@@ -70,7 +74,11 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
                         step_images.append(dict(step=index+1,timestep=int(t),path=frame))
                 trace.append(row)
                 if progress:progress(arm,index+1,len(ts),row)
-            final=decode(latent);save(final,out/(arm+'.png'))
+            final=decode(latent)
+            if arm=='stroke_projected' and finish is not None:
+                save(final,out/'stroke_projected_raw.png')
+                final=finish(final)
+            save(final,out/(arm+'.png'))
             if arm=='stroke_projected' and save_final_projection:
                 # Explicitly separate the raw diffusion output from the final
                 # image-space enforcement. Never label this as raw generation.

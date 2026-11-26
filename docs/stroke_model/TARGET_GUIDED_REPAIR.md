@@ -55,6 +55,8 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 
 ### Colab 실행
 
+`notebooks/repair_audit/target_guided_repair_ink.ipynb`는 글자 전체 정합으로 얻은 획 마스크를 합쳐 보정 가이드로 쓴다. 원래 잉크와 목표 잉크 주변에서만 목표 밝기를 적용하며, 옅은 기존 획과 그 주변을 배경 샘플에서 제외한다. 매 스텝에서 가이드 전후의 인코딩 차이를 잠재값에 반영한다. 최종 PNG는 보정 영역 밖의 입력 픽셀을 복원하고 영역 안의 출력 색을 무채색으로 정리한다. `stroke_projected_raw.png`는 이 처리를 하기 전의 역확산 결과다. 7번 슬라이더의 중간 프레임에도 이 최종 처리를 적용하지 않는다. 밝은 단순 배경용이다.
+
 `notebooks/repair_audit/target_guided_repair_timeline.ipynb`에는 후보 비교와 단계별 보기가 있다. 4번에서 후보를 글자별로 모아서 보고, 폰트명·row·현재 입력·적용 기준을 구분한다. 6번의 `REPAIR_STEPS`는 DDIM 설정 스텝 수이며 강도 `.25`에서 `60`은 실제 15스텝, `120`은 실제 30스텝이다. 7번은 사례를 선택해 입력부터 각 단계의 가이드 적용 후 깨끗한 이미지 예측, 최종 출력까지 넘겨 본다. 8번에서 저장된 단계 PNG를 포함한 ZIP을 받는다.
 
 `notebooks/repair_audit/target_guided_repair.ipynb`를 Colab GPU 런타임에 열고 코드 셀 1→7을 실행한다.
