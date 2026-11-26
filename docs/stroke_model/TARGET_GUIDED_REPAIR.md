@@ -55,6 +55,8 @@ VAE 왕복으로 제약이 달라지거나 지역 밖으로 변화가 번질 수
 
 ### Colab 실행
 
+`notebooks/repair_audit/target_guided_repair_timeline.ipynb`에는 후보 비교와 단계별 보기가 있다. 4번에서 후보를 글자별로 모아서 보고, 폰트명·row·현재 입력·적용 기준을 구분한다. 6번의 `REPAIR_STEPS`는 DDIM 설정 스텝 수이며 강도 `.25`에서 `60`은 실제 15스텝, `120`은 실제 30스텝이다. 7번은 사례를 선택해 입력부터 각 단계의 가이드 적용 후 깨끗한 이미지 예측, 최종 출력까지 넘겨 본다. 8번에서 저장된 단계 PNG를 포함한 ZIP을 받는다.
+
 `notebooks/repair_audit/target_guided_repair.ipynb`를 Colab GPU 런타임에 열고 코드 셀 1→7을 실행한다.
 이전 stage 결과 ZIP은 필요 없다. 기존 best.pt와 원래 기준 글자/획 자료를 Drive에서 읽는다.
 1번 셀은 이전 세션 모듈 캐시를 비우고 포함된 소스를 다시 불러온다. 업데이트 후 import 오류가 나면

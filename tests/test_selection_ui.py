@@ -91,7 +91,12 @@ class SelectionUITests(unittest.TestCase):
             self.assertTrue(env['character_keys'][0].disabled)
             env['pick_mode'].value='prototype'
             self.assertEqual(len(env['gallery'].children),2)
+            captions=[card.children[2].value for card in env['gallery'].children]
+            self.assertIn('후보 2개',captions[0])
+            self.assertIn('<br>A<br>',captions[0])
+            self.assertIn('<br>B<br>',captions[1])
             env['choose_thumbnail'](2);env['pin_buttons'][0].click()
+            self.assertIn('적용 기준',env['gallery'].children[1].children[2].value)
             self.assertTrue(env['identity_checks'][0].value)
             self.assertTrue(env['identity_checks'][0].disabled)
             env['pick_mode'].value='input';env['choose_thumbnail'](3)

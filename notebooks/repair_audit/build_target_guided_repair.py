@@ -14,7 +14,7 @@ MODULES = [
 ]
 
 
-def build():
+def build(*,write=True):
     helpers = {name: (ROOT/name).read_text(encoding='utf-8') for name in MODULES}
     hashes = {name: hashlib.sha256(code.encode()).hexdigest() for name, code in helpers.items()}
     cells = []
@@ -279,6 +279,7 @@ files.download(archive)
                     metadata=dict(colab=dict(name='target_guided_repair.ipynb'),
                                   accelerator='GPU', kernelspec=dict(name='python3',display_name='Python 3')))
     for index, cell in enumerate(cells): cell['id'] = f'target-repair-{index}'
+    if not write:return notebook
     path = ROOT/'notebooks/repair_audit/target_guided_repair_archive.ipynb'
     path.write_text(json.dumps(notebook,ensure_ascii=False,indent=1),encoding='utf-8')
     return path

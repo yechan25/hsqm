@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative_prompt='',
                        steps=60,strength=.25,seed=2026,cfg_scale=5.,start_from_noise=False,
-                       save_final_projection=False,progress=None,guided_only=False):
+                       save_final_projection=False,progress=None,guided_only=False,save_step_images=False):
     from PIL import Image
     out=Path(output);out.mkdir(parents=True,exist_ok=False)
     if not 0<strength<=1 or steps<1 or (not start_from_noise and int(steps*strength)<1) or any(v%8 for v in source.size):
@@ -29,6 +29,8 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
     def save(x,path):
         Image.fromarray(np.rint(x[0].permute(1,2,0).cpu().numpy()*255).clip(0,255).astype('uint8')).save(path)
     traces={}
+    step_images=[]
+    if save_step_images: (out/'steps').mkdir()
     with torch.no_grad():
         positive,negative=pipe.encode_prompt(prompt,device,1,True,negative_prompt=negative_prompt)
         embeddings=torch.cat([negative,positive])
@@ -59,8 +61,13 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
                     previous=int(t)-scheduler.config.num_train_timesteps//scheduler.num_inference_steps
                     alpha=(scheduler.alphas_cumprod[previous] if previous>=0 else scheduler.final_alpha_cumprod).to(latent)
                     latent=latent+alpha.sqrt()*(corrected-base.pred_original_sample)
+                    corrected_rgb=decode(corrected)
                     row.update(before=constraints.diagnostics(prediction),pixel_projected=constraints.diagnostics(target),
-                               after_vae=constraints.diagnostics(decode(corrected)))
+                               after_vae=constraints.diagnostics(corrected_rgb))
+                    if save_step_images:
+                        frame=f'steps/{index+1:03d}.png'
+                        save(corrected_rgb,out/frame)
+                        step_images.append(dict(step=index+1,timestep=int(t),path=frame))
                 trace.append(row)
                 if progress:progress(arm,index+1,len(ts),row)
             final=decode(latent);save(final,out/(arm+'.png'))
@@ -74,6 +81,7 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
         start_from_noise=start_from_noise,source_content_used=not start_from_noise,seed=seed,cfg_scale=cfg_scale,
         initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
         paired_initial_latent=not guided_only,backward_passes=0,additional_training=False,traces=traces,
+        step_images=step_images,
         guide=getattr(constraints,'metadata',dict(kind='per_stroke_ink_constraints')),
         final_pixel_projection_saved=save_final_projection,
         saved_png_ink_tolerance=1/255,

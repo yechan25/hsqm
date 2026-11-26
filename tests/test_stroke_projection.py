@@ -75,7 +75,7 @@ class StrokeProjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             out=Path(temp)/'result'
             report=run_projected_pair(pipe,Image.new('RGB',(32,32),'white'),constraints(),out,steps=4,strength=.5,
-                start_from_noise=True,save_final_projection=True)
+                start_from_noise=True,save_final_projection=True,save_step_images=True)
             self.assertTrue(torch.equal(calls[0],calls[2]))
             self.assertIsNone(pipe.unet.p.grad)
             self.assertEqual(report['backward_passes'],0)
@@ -83,6 +83,10 @@ class StrokeProjectionTests(unittest.TestCase):
             self.assertTrue(report['start_from_noise'])
             self.assertTrue((out/'stroke_projected.png').is_file())
             self.assertTrue((out/'stroke_projected_final_pixel_projection.png').is_file())
+            self.assertEqual([f['timestep'] for f in report['step_images']],[500,0])
+            self.assertEqual([f['step'] for f in report['step_images']],[1,2])
+            for frame in report['step_images']:
+                with Image.open(out/frame['path']) as image:self.assertEqual(image.size,(32,32))
             self.assertTrue(all(row['pixel_projected']['missing_pixels']==0 for row in report['traces']['stroke_projected']))
 
     def test_offline_pilot_defers_missing_widths_and_validates_observation_pixels(self):

@@ -2,14 +2,15 @@
 import ast
 import hashlib
 import json
+import sys
 from pathlib import Path
 from build_target_guided_repair import build as build_archive
 
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def build():
-    base=json.loads(build_archive().read_text(encoding='utf-8'))
+def build(*,timeline=False):
+    base=build_archive(write=False)
     old_codes=[''.join(c['source']) for c in base['cells'] if c['cell_type']=='code']
     setup=old_codes[0]
     tree=ast.parse(setup)
@@ -44,6 +45,9 @@ from repair_audit.selection_cache import prepare_selection_cache,selection_thumb
 '''
     cells=[]
     def add(kind,source):
+        if timeline:
+            source=source.replace('1→7','1→8').replace('7번은 가장 최근 실행을 다운로드','8번은 가장 최근 실행을 다운로드')
+            source=source.replace('7. ZIP 다운로드','7. 단계별 보기 → 8. ZIP 다운로드')
         source=source.strip()+'\n'
         if kind=='code':ast.parse(source)
         cells.append(dict(cell_type=kind,metadata={},source=source.splitlines(keepends=True),
@@ -67,7 +71,7 @@ GPU(T4 가능)에서 코드 셀 **1→7** 실행하세요.
 점수는 외부 평가 점수가 없을 때 미검증 기하 지표를 씁니다. 실제 GPU 품질은 미검증입니다.
 ''')
     add('code',setup)
-    add('code','''# 2. Drive의 기존 체크포인트·기준 자료 준비 (결과 ZIP 불필요)
+    config='''# 2. Drive의 기존 체크포인트·기준 자료 준비 (결과 ZIP 불필요)
 CHECKPOINT = '/content/drive/Shareddrives/2026 자율연구/HSQM/v2_topology_runs/20261104_214705_208224/best.pt'
 DATA_ROOT = '/content/drive/Shareddrives/2026 자율연구/HSQM/dataset/automated_train_dataset'
 CSV_PATH = None  # 기본: best.pt 옆 selected_paths.csv
@@ -92,7 +96,9 @@ CATALOG = training_catalog(TRAIN_MANIFEST)
 if not CATALOG: raise ValueError('선택 가능한 기준 글자가 없습니다.')
 SOURCE_CATALOG = CATALOG
 print('기준 목록:',len(CATALOG),'개. 3번 전처리를 실행하세요.')
-''')
+'''
+    if timeline:config=config.replace('REPAIR_STEPS, REPAIR_STRENGTH, REPAIR_SEED = 60, .25, 2026\n','')
+    add('code',config)
     add('code','''# 3. 선택용 전처리. 원본 읽기·로컬 자료 복사·썸네일 생성은 여기서 한 번 수행
 def preparation_progress(done,total):
     if done==1 or done%10==0 or done==total: print('선택 자료 준비',done,'/',total,flush=True)
@@ -153,7 +159,22 @@ display(Image.open(Path(SEED_CASES[0]['directory'])/'input.png').resize((384,384
                     '        masks = None  # 현재 생성물에서 새로 추출')
     run=run.replace('같은 세션에서 4번을 다시 실행하면 미완료 사례부터 재계산합니다.',
                     '현재 결과는 7번으로 다운로드하세요. 6번 재실행은 새로운 실험입니다.')
+    if timeline:
+        settings='''# @title 6. 생성·보정
+REPAIR_STEPS = 60 # @param {type:"integer"}
+REPAIR_STRENGTH = .25
+REPAIR_SEED = 2026
+if not 4 <= REPAIR_STEPS <= 1000:
+    raise ValueError('REPAIR_STEPS는 4~1000 사이로 설정하세요.')
+print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로당 약 {int(REPAIR_STEPS*REPAIR_STRENGTH)}스텝')
+'''
+        run=settings+run
+        run=run.replace("negative_prompt=case.get('negative_prompt',''),progress=progress)",
+            "negative_prompt=case.get('negative_prompt',''),progress=progress,save_step_images=True)")
+        run=run.replace('현재 결과는 7번으로 다운로드','현재 결과는 8번으로 다운로드')
     add('code',run)
+    if timeline:
+        add('code',(ROOT/'notebooks/repair_audit/denoise_timeline_ui.py').read_text(encoding='utf-8'))
     add('markdown','''## 결과 확인과 다음 선택
 - fresh_inputs/<case_id>/diffusion_comparison.png: 입력 / 목표 / 일반 재역확산 / 가이드 재역확산.
 - 정상 대조군도 함께 보고 획 두께·원본 스타일·오류 수정·배경 조화를 확인하세요.
@@ -164,12 +185,14 @@ display(Image.open(Path(SEED_CASES[0]['directory'])/'input.png').resize((384,384
 - 6번을 다시 실행하면 현재 선택으로 **새 실험**을 시작합니다. 이전 실행은 별도 폴더·ZIP으로 남습니다.
 - 7번은 가장 최근 실행을 다운로드합니다. 중간 latent나 세션 간 재개는 지원하지 않습니다.
 ''')
-    add('code',old_codes[4].replace('# 5.','# 7.'))
+    add('code',old_codes[4].replace('# 5.','# 8.' if timeline else '# 7.'))
     nb=dict(base,cells=cells)
     for i,cell in enumerate(cells):cell['id']=f'selectable-target-{i}'
-    path=ROOT/'notebooks/repair_audit/target_guided_repair.ipynb'
+    filename='target_guided_repair_timeline.ipynb' if timeline else 'target_guided_repair.ipynb'
+    nb['metadata']['colab']['name']=filename
+    path=ROOT/'notebooks/repair_audit'/filename
     path.write_text(json.dumps(nb,ensure_ascii=False,indent=1),encoding='utf-8')
     return path
 
 
-if __name__=='__main__':print(build())
+if __name__=='__main__':print(build(timeline='--timeline' in sys.argv))

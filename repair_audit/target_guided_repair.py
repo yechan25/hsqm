@@ -54,7 +54,7 @@ def save_plan(guide,rendered,output):
 
 def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_masks=None,scores=None,
                            config=None,registration_config=None,steps=60,strength=.25,seed=2026,
-                           prompt='',negative_prompt='',progress=None):
+                           prompt='',negative_prompt='',progress=None,save_step_images=False):
     """Call directly after existing generate_cases / generation of a 2x2 sheet."""
     from diffusion_model.stroke_projected_diffusion import run_projected_pair
     masks=cached_masks if cached_masks is not None else extract_sheet_masks(source,conditions,extractor)
@@ -63,7 +63,8 @@ def repair_generated_sheet(pipe,extractor,source,conditions,output,*,cached_mask
     root=Path(output);root.mkdir(parents=True,exist_ok=False)
     save_plan(guide,rendered,root/'target_plan')
     report=run_projected_pair(pipe,source,guide,root/'reverse',steps=steps,strength=strength,seed=seed,
-        prompt=prompt,negative_prompt=negative_prompt,start_from_noise=False,save_final_projection=False,progress=progress)
+        prompt=prompt,negative_prompt=negative_prompt,start_from_noise=False,save_final_projection=False,
+        progress=progress,save_step_images=save_step_images)
     json_write(root/'pipeline.json',dict(stages=['existing_2x2_generation','stroke_extraction',
         'observed_width_rendering','shared_glyph_affine','score_to_edit_plan','source_initialized_rediffusion'],
         score_source='provided' if scores is not None else 'uncalibrated_geometry_proxy_v1',

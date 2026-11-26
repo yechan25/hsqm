@@ -1,10 +1,24 @@
 # 4. 전처리된 그림으로 선택. 원본 파일 읽기와 썸네일 생성은 3번에서 완료합니다.
-import io
 import html
+from collections import Counter
 
-LABEL_TO_ENTRY = {f"row {e['manifest_row']} | {e.get('char_id') or '(이름 없음)'}": e for e in CATALOG}
+def font_label(entry):
+    sample = entry.get('source_entry',entry)
+    path = sample.get('reference') or sample.get('source_image') or ''
+    stem = Path(path.replace('\\','/')).stem
+    character = entry.get('resolved_character') or reference_identity(entry)['resolved_character']
+    parts = stem.split('_')
+    if character in parts:
+        prefix = parts[:parts.index(character)]
+        if prefix[:1]==['I']:prefix=prefix[1:]
+        if prefix:return '_'.join(prefix)
+    return '폰트명 없음'
+
+
+LABEL_TO_ENTRY = {f"row {e['manifest_row']} | {e.get('char_id') or '(이름 없음)'} | {font_label(e)}": e for e in CATALOG}
 LABELS = list(LABEL_TO_ENTRY)
 ROW_TO_LABEL = {e['manifest_row']: label for label, e in LABEL_TO_ENTRY.items()}
+CHARACTER_COUNTS = Counter(e['resolved_character'] for e in CATALOG if e.get('resolved_character'))
 _prototype_records = dict(PROTOTYPE_RECORDS)
 _prototype_images = dict(PROTOTYPE_PREVIEWS)
 # Preserve the existing selection contract consumed by cell 5.
@@ -44,11 +58,18 @@ def selected_rows():
 def selected_keys():
     keys = [w.value.strip() for w in character_keys]
     for i,(key, check) in enumerate(zip(keys, identity_checks)):
-        if not key or not check.value: raise ValueError('각 칸의 글자 이름과 동일 글자 확인이 필요합니다.')
+        if not key:raise ValueError(f'칸 {i+1}의 글자 이름을 확인하세요.')
         _,record=load_prototype(PROTOTYPE_BANK,key)
         candidate=LABEL_TO_ENTRY.get(prototype_selectors[i].value)
         if candidate and candidate['manifest_row']!=record['manifest_row']:
             raise ValueError('새로 고른 기준의 적용 버튼을 먼저 누르세요.')
+        input_character=LABEL_TO_ENTRY[reference_selectors[i].value].get('resolved_character')
+        base_character=reference_identity(record.get('reference',{}))['resolved_character']
+        if input_character and base_character:
+            if input_character!=base_character or input_character!=key:
+                raise ValueError(f'칸 {i+1}의 입력과 기준 글자가 다릅니다.')
+        elif not check.value:
+            raise ValueError(f'칸 {i+1}의 입력과 기준이 같은 글자인지 확인하세요.')
     return keys
 
 
@@ -64,7 +85,7 @@ def refresh_selection(change=None):
     entry = LABEL_TO_ENTRY.get(reference_selectors[index].value)
     pictures = []
     if entry:
-        pictures.append(widgets.VBox([widgets.HTML('입력 · row '+str(entry['manifest_row'])),
+        pictures.append(widgets.VBox([widgets.HTML(html.escape('입력 · '+font_label(entry)+' · row '+str(entry['manifest_row']))),
             widgets.Image(value=_thumb(entry),format='png',width=92,height=92)]))
     key = character_keys[index].value.strip()
     known_character = entry.get('resolved_character') if entry else None
@@ -74,12 +95,12 @@ def refresh_selection(change=None):
     candidate = LABEL_TO_ENTRY.get(prototype_selectors[index].value)
     if candidate:
         preview = _thumb(candidate)
-        caption = '선택한 기준 · row '+str(candidate['manifest_row'])
+        caption = '선택한 기준 · '+font_label(candidate)+' · row '+str(candidate['manifest_row'])
     elif key in _prototype_images:
         preview = _prototype_images[key]
-        caption = '사용할 기준 · row '+str(_prototype_records[key]['manifest_row'])
+        caption = '사용할 기준 · '+font_label(_prototype_records[key].get('reference',{}))+' · row '+str(_prototype_records[key]['manifest_row'])
     if preview is not None:
-        pictures.append(widgets.VBox([widgets.HTML(caption),
+        pictures.append(widgets.VBox([widgets.HTML(html.escape(caption)),
             widgets.Image(value=preview,format='png',width=92,height=92)]))
     else: pictures.append(widgets.HTML('오른쪽 그림에서<br>공통 기준을 선택하세요.'))
     prototype_entry = candidate or _prototype_records.get(key,{}).get('reference',{})
@@ -139,6 +160,7 @@ def pin(index):
         _message(f'{record["character"]}: 기준 row {record["manifest_row"]} 적용. 필요하면 다시 선택해 변경하세요.')
     except (ValueError,FileNotFoundError) as exc: _message(str(exc))
     refresh_selection()
+    render_gallery()
 
 
 def render_gallery(change=None):
@@ -149,13 +171,22 @@ def render_gallery(change=None):
     character = source_entry.get('resolved_character')
     if pick_mode.value=='prototype' and character:
         entries = [e for e in entries if e.get('resolved_character')==character]
+    if CHARACTER_COUNTS:
+        entries.sort(key=lambda e:(e.get('resolved_character') or '\uffff',font_label(e),e['manifest_row']))
     pages = max(1,(len(entries)+7)//8); _page = min(_page,pages-1)
     children = []
+    current_row=source_entry.get('manifest_row')
+    saved_row=_prototype_records.get(character_keys[slot_picker.value].value.strip(),{}).get('manifest_row')
     for entry in entries[_page*8:(_page+1)*8]:
         row = entry['manifest_row']
         button = widgets.Button(description=f'선택 {row}',layout=widgets.Layout(width='100px',height='28px'))
         button.on_click(lambda b,row=row:choose_thumbnail(row))
-        children.append(widgets.VBox([widgets.Image(value=_thumb(entry),format='png',width=92,height=92),button],
+        key=entry.get('resolved_character')
+        count=CHARACTER_COUNTS.get(key,0)
+        badges=' · '.join(name for active,name in [(row==current_row,'현재 입력'),(row==saved_row,'적용 기준')] if active)
+        caption=widgets.HTML('<b>'+html.escape(key or '?')+'</b>'+ (f' · 후보 {count}개' if count else '')+
+            '<br>'+html.escape(font_label(entry))+'<br>'+html.escape(badges),layout=widgets.Layout(width='98px'))
+        children.append(widgets.VBox([widgets.Image(value=_thumb(entry),format='png',width=92,height=92),button,caption],
             layout=widgets.Layout(border='1px solid #ccc',padding='3px',align_items='center')))
     gallery.children = tuple(children)
     suffix = f' · {character}의 기준만 표시' if pick_mode.value=='prototype' and character else ''
@@ -176,7 +207,7 @@ def changed(index, key_changed=False):
         character=entry.get('resolved_character')
         if character and character_keys[index].value!=character:character_keys[index].value=character
     refresh_selection()
-    if pick_mode.value=='prototype':render_gallery()
+    render_gallery()
 
 
 def filter_changed(change):
