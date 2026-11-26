@@ -6,7 +6,7 @@ import sys
 import unittest
 import numpy as np
 from PIL import Image
-from stroke_model.attribute_guidance import mapped_stroke_plan
+from stroke_model.attribute_guidance import mapped_sheet_plan,mapped_stroke_plan
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -55,11 +55,26 @@ class AttributeTests(unittest.TestCase):
         for code in codes:compile(code,'<attribute_colab>','exec')
         self.assertIn('steps=120,strength=.25',codes[4])
         self.assertIn('save_final_projection=False',codes[4])
-        self.assertIn('GUIDE=mapped_stroke_plan(',codes[3])
+        self.assertIn('GUIDE=mapped_sheet_plan(',codes[3])
+        self.assertIn('guided_only=True',codes[4])
         tree=ast.parse(codes[0])
         helpers=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign)
             and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='RUNTIME_HELPERS')
         for name,code in helpers.items():self.assertEqual(code,(ROOT/name).read_text(encoding='utf-8'))
+
+    def test_composite_keeps_every_stroke_including_loop_and_missing(self):
+        source,masks=self.fixture()
+        yy,xx=np.indices((32,32));loop=(abs(np.hypot(xx-20,yy-16)-4)<1.4).astype(np.float32)
+        canonical=np.concatenate([masks[0],loop[None]])
+        masks=[np.concatenate([m,np.zeros((1,32,32),np.float32)]) for m in masks]
+        masks[0][2]=loop
+        guide=mapped_sheet_plan(source,masks,[dict(strokes=canonical)]*4)
+        modes=[row['mode'] for row in guide.report['strokes']]
+        self.assertEqual(modes.count('endpoints'),8)
+        self.assertEqual(modes.count('center_and_span'),1)
+        self.assertEqual(modes.count('missing_canonical'),3)
+        self.assertTrue(all(region.any() for region in guide.stroke_regions))
+        self.assertTrue(np.array_equal(guide.target[~guide.roi],guide.source[~guide.roi]))
 
 
 if __name__=='__main__':unittest.main()

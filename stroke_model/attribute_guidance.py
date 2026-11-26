@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 from scipy.ndimage import binary_dilation,distance_transform_edt,gaussian_filter1d,label,map_coordinates
 from scipy.spatial import cKDTree
+from skimage.morphology import skeletonize
 from .stroke_reference_fit import principal_path
 from .target_stroke_plan import TargetImageGuide,TargetPlanConfig
 
@@ -18,18 +19,7 @@ def _open_path(binary):
     return path,component
 
 
-def mapped_stroke_plan(source,masks,conditions,glyph,stroke,*,blend=.4):
-    if not 0<blend<=1:raise ValueError('Invalid blend')
-    rgb=np.asarray(source.convert('RGB'),np.float32)/255
-    if len(masks)!=4 or rgb.shape[0]!=rgb.shape[1] or rgb.shape[0]%2:raise ValueError('Expected a 2x2 sheet')
-    if not 0<=glyph<4:raise ValueError('Invalid glyph index')
-    observed=np.asarray(masks[glyph],np.float32)
-    if observed.ndim!=3 or not 0<=stroke<len(observed):raise ValueError('Invalid stroke index')
-    if not np.isfinite(observed).all() or observed.min()<0 or observed.max()>1:raise ValueError('Invalid extracted masks')
-    canonical=np.asarray(conditions[glyph]['strokes'],np.float32)
-    if canonical.shape!=observed.shape:raise ValueError('기준 획과 추출 획의 대응이 맞지 않습니다.')
-    path,binary=_open_path(observed[stroke]>.35)
-    template,_=_open_path(canonical[stroke]>.35)
+def _endpoint_mapping(path,template,binary):
     observed_axis=path[-1]-path[0]
     if (template[-1]-template[0])@observed_axis<0:template=template[::-1]
     # Smooth the canonical raster path lightly and pin its two ends.
@@ -44,6 +34,23 @@ def mapped_stroke_plan(source,masks,conditions,glyph,stroke,*,blend=.4):
     radius=float(np.median(map_coordinates(distance_transform_edt(binary),
         [middle[:,1],middle[:,0]],order=1)))
     dense=np.stack([np.interp(np.linspace(0,1,1024),t[:,0],mapped[:,i]) for i in range(2)],axis=1)
+    return dense,radius,mapped
+
+
+def mapped_stroke_plan(source,masks,conditions,glyph,stroke,*,blend=.4):
+    if not 0<blend<=1:raise ValueError('Invalid blend')
+    rgb=np.asarray(source.convert('RGB'),np.float32)/255
+    if len(masks)!=4 or rgb.shape[0]!=rgb.shape[1] or rgb.shape[0]%2:raise ValueError('Expected a 2x2 sheet')
+    if not 0<=glyph<4:raise ValueError('Invalid glyph index')
+    observed=np.asarray(masks[glyph],np.float32)
+    if observed.ndim!=3 or not 0<=stroke<len(observed):raise ValueError('Invalid stroke index')
+    if not np.isfinite(observed).all() or observed.min()<0 or observed.max()>1:raise ValueError('Invalid extracted masks')
+    canonical=np.asarray(conditions[glyph]['strokes'],np.float32)
+    if canonical.shape!=observed.shape:raise ValueError('기준 획과 추출 획의 대응이 맞지 않습니다.')
+    path,binary=_open_path(observed[stroke]>.35)
+    template,_=_open_path(canonical[stroke]>.35)
+    dense,radius,mapped=_endpoint_mapping(path,template,binary)
+    observed_axis=path[-1]-path[0]
     others=np.delete(observed,stroke,axis=0)
     protected=binary_dilation(others.max(0)>.3,iterations=1) if len(others) else np.zeros_like(binary)
     side=rgb.shape[0]//2;y=(glyph//2)*side;x=(glyph%2)*side
@@ -82,4 +89,81 @@ def mapped_stroke_plan(source,masks,conditions,glyph,stroke,*,blend=.4):
     guide=TargetImageGuide(rgb,target,weights,[full_region],report,TargetPlanConfig(maximum_step_blend=blend))
     guide.metadata.update(kind='single_canonical_stroke_mapping',score_role='none; user-selected stroke',
                           whole_glyph_affine=False,canonical_shape_replacement=True)
+    return guide
+
+
+def mapped_sheet_plan(source,masks,conditions,*,blend=.4):
+    """Fit strokes independently, then composite their union before projection."""
+    rgb=np.asarray(source.convert('RGB'),np.float32)/255
+    if len(masks)!=4 or len(conditions)!=4 or source.width!=source.height or source.width%2:
+        raise ValueError('Expected a 2x2 sheet and four stroke groups')
+    config=TargetPlanConfig(maximum_step_blend=blend)
+    target=rgb.copy();weights=np.zeros(rgb.shape[:2],np.float32)
+    side=source.width//2
+    output_y,output_x=np.indices((side,side))
+    rows,regions=[],[]
+    for glyph,(group,condition) in enumerate(zip(masks,conditions)):
+        observed=np.asarray(group,np.float32)
+        canonical=np.asarray(condition['strokes'],np.float32)
+        if observed.shape!=canonical.shape or observed.ndim!=3 or not len(observed):
+            raise ValueError(f'칸 {glyph+1}: 기준 획과 추출 획의 대응을 확인하세요.')
+        if any(not np.isfinite(a).all() or a.min()<0 or a.max()>1 for a in (observed,canonical)):
+            raise ValueError('Expected finite stroke masks in [0,1]')
+        binary=observed>.35
+        scale=side/observed.shape[-1]
+        points=np.stack([(output_x+.5)/scale-.5,(output_y+.5)*observed.shape[-2]/side-.5],-1)
+        fits=[]
+        for obs,ref in zip(binary,canonical>.35):
+            try:
+                path,component=_open_path(obs)
+                template,_=_open_path(ref)
+                mapped,radius,_=_endpoint_mapping(path,template,component)
+                mode='endpoints'
+            except ValueError:
+                # Closed/ambiguous strokes use center and span; a missing stroke
+                # stays at its canonical coordinates and borrows a glyph width.
+                skeleton=skeletonize(ref)
+                if not skeleton.any():raise ValueError('Empty reference stroke')
+                mapped=np.argwhere(skeleton)[:,::-1].astype(float)
+                radius=None;mode='missing_canonical'
+                if obs.any():
+                    components,_=label(obs,np.ones((3,3)))
+                    component=components==np.argmax(np.bincount(components[obs]))
+                    pixels=np.argwhere(component)[:,::-1]
+                    reference_pixels=np.argwhere(ref)[:,::-1]
+                    extent=np.linalg.norm(np.ptp(pixels,axis=0))/max(1,np.linalg.norm(np.ptp(reference_pixels,axis=0)))
+                    mapped=(mapped-reference_pixels.mean(0))*np.clip(extent,.5,2.)+pixels.mean(0)
+                    centerline=skeletonize(component)
+                    radius=float(np.median(distance_transform_edt(component)[centerline]))
+                    mode='center_and_span'
+            fits.append((mapped,radius,mode,ref))
+        widths=[radius for _,radius,_,_ in fits if radius is not None]
+        y=(glyph//2)*side;x=(glyph%2)*side
+        crop=rgb[y:y+side,x:x+side]
+        foreground=(1-crop.mean(-1))>.35
+        if foreground.any() and not widths:
+            raise ValueError(f'칸 {glyph+1}: 보이는 잉크가 어떤 획에도 잡히지 않았습니다.')
+        union=np.zeros((side,side),np.float32)
+        for stroke,(mapped,radius,mode,ref) in enumerate(fits):
+            if radius is None:
+                radius=float(np.median(widths)) if widths else float(np.median(distance_transform_edt(ref)[skeletonize(ref)]))
+            distance,_=cKDTree(mapped).query(points)
+            alpha=np.clip((radius-distance)*scale+.5,0,1).astype(np.float32)
+            np.maximum(union,alpha,out=union)
+            region=np.zeros_like(weights,dtype=bool);region[y:y+side,x:x+side]=alpha>.03
+            regions.append(region)
+            rows.append(dict(glyph=glyph+1,stroke=stroke+1,mode=mode,representative_width=2*radius,
+                score=None,edit_strength=blend))
+        old=np.asarray(Image.fromarray(observed.max(0)).resize((side,side),Image.Resampling.BILINEAR))>.15
+        edit=binary_dilation(old|(union>.03),iterations=max(1,round(2*scale)))
+        background_mask=binary_dilation((1-crop.mean(-1))>.02,iterations=2)
+        if background_mask.all():raise ValueError(f'칸 {glyph+1}: 깨끗한 배경을 찾지 못했습니다.')
+        _,indices=distance_transform_edt(background_mask,return_indices=True)
+        background=crop[indices[0],indices[1]]
+        color=np.median(crop[foreground],axis=0) if foreground.any() else np.zeros(3)
+        composed=background*(1-union[...,None])+color*union[...,None]
+        target[y:y+side,x:x+side][edit]=composed[edit]
+        weights[y:y+side,x:x+side]=edit*blend
+    guide=TargetImageGuide(rgb,target,weights,regions,dict(strokes=rows),config)
+    guide.metadata.update(kind='independent_stroke_mapping_composite',score_role='none',whole_glyph_affine=False)
     return guide

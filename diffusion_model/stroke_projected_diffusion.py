@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative_prompt='',
                        steps=60,strength=.25,seed=2026,cfg_scale=5.,start_from_noise=False,
-                       save_final_projection=False,progress=None):
+                       save_final_projection=False,progress=None,guided_only=False):
     from PIL import Image
     out=Path(output);out.mkdir(parents=True,exist_ok=False)
     if not 0<strength<=1 or steps<1 or (not start_from_noise and int(steps*strength)<1) or any(v%8 for v in source.size):
@@ -42,7 +42,8 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
         initial=noise*pipe.scheduler.init_noise_sigma if start_from_noise else pipe.scheduler.add_noise(clean,noise,ts[:1])
         roi=torch.as_tensor(constraints.roi.copy(),device=device)[None,None].float()
         gate=F.adaptive_max_pool2d(roi,initial.shape[-2:])
-        for arm in ('redenoise_only','stroke_projected'):
+        arms=('stroke_projected',) if guided_only else ('redenoise_only','stroke_projected')
+        for arm in arms:
             scheduler=deepcopy(pipe.scheduler);latent=initial.clone();trace=[]
             for index,t in enumerate(ts):
                 model_input=scheduler.scale_model_input(torch.cat([latent,latent]),t)
@@ -72,7 +73,7 @@ def run_projected_pair(pipe, source, constraints, output, *, prompt='', negative
     report=dict(steps=steps,actual_steps=len(ts),strength=None if start_from_noise else strength,
         start_from_noise=start_from_noise,source_content_used=not start_from_noise,seed=seed,cfg_scale=cfg_scale,
         initial_latent_sha256=hashlib.sha256(initial.cpu().numpy().tobytes()).hexdigest(),
-        paired_initial_latent=True,backward_passes=0,additional_training=False,traces=traces,
+        paired_initial_latent=not guided_only,backward_passes=0,additional_training=False,traces=traces,
         guide=getattr(constraints,'metadata',dict(kind='per_stroke_ink_constraints')),
         final_pixel_projection_saved=save_final_projection,
         saved_png_ink_tolerance=1/255,

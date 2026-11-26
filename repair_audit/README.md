@@ -1,7 +1,7 @@
 # 획 보정 진단·수정 비교
 
-**[선택한 획에 기준 획을 매핑하는 코랩](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/attribute_straightness.ipynb)**
-— 글자 선택 → 생성·추출 → 획 그림 클릭 → 획별 매핑 및 재역확산. 코드 셀 1→6.
+**[획별 변형을 합쳐 재역확산하는 코랩](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/per_stroke_composite.ipynb)**
+— 글자 선택 → 생성·추출 → 획별 매핑·목표 합성 → 가이드 재역확산 한 번. 코드 셀 1→6.
 
 **[관측 두께·정답 스켈레톤 목표 기반 재역확산 Colab](https://colab.research.google.com/github/yechan25/hsqm/blob/main/notebooks/repair_audit/target_guided_repair.ipynb)**
 — 이전 결과 ZIP 없이 원하는 기준 글자를 네 칸에 선택해 생성·추출·보정합니다. 코드 셀 1→7 실행.

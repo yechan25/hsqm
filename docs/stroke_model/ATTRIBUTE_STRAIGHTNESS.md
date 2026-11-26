@@ -21,4 +21,4 @@ stroke_model/attribute_guidance.py는 선택한 기준 획의 중심선을 관�
 흰색/단순 배경에 한정한 실험이다. 입력과 VAE/확산 결과의 비선택 영역 동일성은 보장하지 않는다.
 30스텝 설정 자체가 품질 향상의 근거는 아니다. 실제 GPU 품질과 속도는 실행 전 미검증이다.
 
-재생성: python notebooks/repair_audit/build_attribute_straightness.py.
+전체 획 합성 방식과 현재 노트북 생성 방법은 [획별 매핑과 합성 목표](PER_STROKE_COMPOSITE.md)에 있다.

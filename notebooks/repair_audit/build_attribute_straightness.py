@@ -1,4 +1,4 @@
-"""Small Colab for mapping a canonical stroke onto a selected observation."""
+"""Build the Colab that maps all strokes and denoises their composite once."""
 import ast
 import hashlib
 import json
@@ -19,21 +19,19 @@ def build():
     hashes={name:hashlib.sha256(code.encode()).hexdigest() for name,code in helpers.items()}
     setup='\n'.join('RUNTIME_HELPERS='+repr(helpers) if line.startswith('RUNTIME_HELPERS=') else
         'SOURCE_HASHES='+repr(hashes) if line.startswith('SOURCE_HASHES=') else line for line in setup.splitlines())
-    setup+='\nfrom stroke_model.attribute_guidance import mapped_stroke_plan\nfrom diffusion_model.stroke_projected_diffusion import run_projected_pair\n'
+    setup+='\nfrom stroke_model.attribute_guidance import mapped_sheet_plan\nfrom diffusion_model.stroke_projected_diffusion import run_projected_pair\n'
     cells=[]
     def add(kind,source):
         source=source.strip()+'\n'
         if kind=='code':ast.parse(source)
         cells.append(dict(cell_type=kind,metadata={},source=source.splitlines(keepends=True),
             **(dict(execution_count=None,outputs=[]) if kind=='code' else {})))
-    add('markdown','''# 선택한 획에 기준 획 매핑
+    add('markdown','''# 획별 매핑 → 목표 한 장 → 재역확산
 
 GPU 코랩에서 **1→6** 실행. 기존 모델·가중치 유지. 추가 학습 없음.
-**2번 글자 선택 → 3번 생성·획 추출 → 4번 획 그림 클릭 → 5번 보정 → 6번 ZIP 다운로드.**
-선택한 기준 획을 관측 획의 두 끝점에 맞춰 이동·회전·확대합니다. 획당 대표 두께 하나로 그립니다.
-두 끝점이 분명한 획부터 시험합니다. 폐곡선이나 대응이 틀린 획은 다른 획을 선택하세요.
-다른 획은 목표 편집에서 보호하지만 실제 확산/VAE 결과의 비선택 영역 보존은 보장하지 않습니다.
-흰색/단순 배경용 첫 실험이며 GPU 품질은 미검증입니다. 목표 미리보기는 확산 결과가 아닙니다.
+**2번 글자 선택 → 3번 생성·획 추출 → 4번 합친 목표 확인 → 5번 재역확산 → 6번 ZIP 다운로드.**
+각 기준 획을 해당 관측 획에 따로 맞추고 대표 두께로 그립니다. 모든 획을 합친 목표 한 장을 사용합니다.
+흰색/단순 배경용 실험입니다. 목표에서 획끼리 만나는 부분을 확인하세요.
 ''')
     add('code',setup)
     config=codes[1].replace('GENERATION_SEEDS = [100, 101]','GENERATION_SEEDS = [100]')
@@ -76,6 +74,7 @@ preview_glyphs()
     load=codes[4].replace('# 5.','# 3.')
     load=load[:load.index("print('로딩 완료.")]
     load+='''
+GUIDE=None
 entries=chosen_entries();keys=[e['resolved_character'] for e in entries]
 for key in set(keys): save_prototype(CATALOG,BASELINES[key]['manifest_row'],key,PROTOTYPE_BANK)
 OUTPUT=Path('/content')/('attribute_straightness_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
@@ -92,13 +91,13 @@ try:
     CASES=generate_fresh_cases(pipe,controls,OUTPUT/'inputs',strengths=[.65],seeds=[100],steps=60,
         on_saved=lambda *args:save_snapshot())
 finally: pipe.vae.to(dtype=torch.float32)
-MASKS={}
+case=CASES[-1]
+root=Path(case['directory']);source=Image.open(root/'input.png').convert('RGB')
+conditions=load_conditions(root)
 try:
     extractor.to('cuda')
-    for case in CASES:
-        root=Path(case['directory']);source=Image.open(root/'input.png').convert('RGB')
-        MASKS[case['case_id']]=extract_sheet_masks(source,load_conditions(root),extractor)
-        for i,mask in enumerate(MASKS[case['case_id']],1):np.savez_compressed(root/f'extracted_{i}.npz',masks=mask)
+    masks=extract_sheet_masks(source,conditions,extractor)
+    for i,mask in enumerate(masks,1):np.savez_compressed(root/f'extracted_{i}.npz',masks=mask)
 finally:extractor.to('cpu');torch.cuda.empty_cache();save_snapshot()
 json_write(OUTPUT/'runtime_manifest.json',dict(source_hashes=SOURCE_HASHES,
     checkpoint_sha256=file_hash(CHECKPOINT),model_id=MODEL_ID,revision=REVISION,
@@ -107,49 +106,25 @@ json_write(OUTPUT/'runtime_manifest.json',dict(source_hashes=SOURCE_HASHES,
         repair_steps=120,repair_strength=.25,repair_seed=2026)))
 json_write(OUTPUT/'versions.json',VERSIONS)
 save_snapshot()
-print('생성·추출 완료. 4번에서 수정할 획을 고르세요.')
+print('생성·추출 완료. 4번에서 합친 목표를 확인하세요.')
 '''
     add('code',load)
-    add('code','''# 4. 획 그림 아래 버튼 클릭 → 수정 목표 확인
-sample=widgets.Dropdown(options=[('생성 이미지',CASES[-1]['case_id']),('정상 원본',CASES[0]['case_id'])])
-slot=widgets.ToggleButtons(options=[('왼쪽 위',0),('오른쪽 위',1),('왼쪽 아래',2),('오른쪽 아래',3)],value=0)
-stroke_gallery=widgets.HBox(layout=widgets.Layout(flex_flow='row wrap'))
-goal_preview=widgets.Output();SELECTED=None;GUIDE=None
-def current_case():return next(c for c in CASES if c['case_id']==sample.value)
-def update_goal(change=None):
-    global GUIDE
-    GUIDE=None
-    with goal_preview:
-        goal_preview.clear_output(wait=True)
-        if SELECTED is None:print('수정할 획 그림 아래 버튼을 누르세요.');return
-        try:
-            case=current_case();source=Image.open(Path(case['directory'])/'input.png').convert('RGB')
-            GUIDE=mapped_stroke_plan(source,MASKS[sample.value],load_conditions(case['directory']),*SELECTED)
-            canvas=Image.new('RGB',(576,312),'white');draw=ImageDraw.Draw(canvas)
-            draw.text((5,5),'input',fill='black');draw.text((293,5),'target: NOT diffusion',fill='black')
-            canvas.paste(source.resize((288,288)),(0,24))
-            target=Image.fromarray(np.uint8(np.rint(GUIDE.target*255)))
-            canvas.paste(target.resize((288,288)),(288,24));display(canvas)
-            r=GUIDE.report
-            print('선택한 획:',r['stroke'],'| 관측 대표 두께:',round(r['representative_width'],1),'px (추출 해상도)')
-        except ValueError as exc:print(str(exc))
-def choose_stroke(g,k):
-    global SELECTED
-    SELECTED=(g,k);update_goal()
-def show_strokes(change=None):
-    global SELECTED,GUIDE
-    SELECTED=None;GUIDE=None;cards=[]
-    for k,mask in enumerate(MASKS[sample.value][slot.value]):
-        b=widgets.Button(description=f'획 {k+1}',layout=widgets.Layout(width='100px'))
-        b.on_click(lambda button,g=slot.value,k=k:choose_stroke(g,k))
-        cards.append(widgets.VBox([widgets.Image(value=thumbnail(mask[None]),width=92,height=92),b]))
-    stroke_gallery.children=tuple(cards);update_goal()
-sample.observe(show_strokes,names='value');slot.observe(show_strokes,names='value')
-display(widgets.VBox([sample,slot,stroke_gallery,goal_preview]));show_strokes()
+    add('code','''# 4. 모든 획을 따로 매핑하고 목표 한 장으로 합치기
+GUIDE=None
+GUIDE=mapped_sheet_plan(source,masks,conditions)
+target=Image.fromarray(np.uint8(np.rint(GUIDE.target*255)))
+target.save(OUTPUT/'target.png')
+json_write(OUTPUT/'mapping.json',GUIDE.report)
+canvas=Image.new('RGB',(576,312),'white');draw=ImageDraw.Draw(canvas)
+draw.text((5,5),'input',fill='black');draw.text((293,5),'combined target',fill='black')
+canvas.paste(source.resize((288,288)),(0,24));canvas.paste(target.resize((288,288)),(288,24))
+display(canvas)
+fallbacks=[(r['glyph'],r['stroke'],r['mode']) for r in GUIDE.report['strokes'] if r['mode']!='endpoints']
+if fallbacks:print('끝점 대신 중심·크기 또는 기준 위치를 쓴 획 (칸, 획, 방식)',fallbacks)
+save_snapshot()
 ''')
-    add('code','''# 5. 선택한 획만 가이드. 기본 실제 30스텝. 결과를 목표로 덮어쓰지 않음
-if GUIDE is None:raise ValueError('4번에서 매핑할 획을 선택하고 목표를 확인하세요.')
-case=current_case();source=Image.open(Path(case['directory'])/'input.png').convert('RGB')
+    add('code','''# 5. 합친 목표로 재역확산 한 번 (실제 30스텝)
+if GUIDE is None:raise ValueError('4번에서 합친 목표를 먼저 만드세요.')
 run=OUTPUT/('repair_'+datetime.now().strftime('%H%M%S_%f'));run.mkdir()
 Image.fromarray(np.uint8(np.rint(GUIDE.target*255))).save(run/'target.png')
 json_write(run/'attribute_plan.json',GUIDE.report)
@@ -158,11 +133,10 @@ def progress(arm,step,total,row):
 try:
     report=run_projected_pair(pipe,source,GUIDE,run/'reverse',steps=120,strength=.25,seed=2026,
         prompt=case['prompt'],negative_prompt=case['negative_prompt'],
-        start_from_noise=False,save_final_projection=False,progress=progress)
-    panels=[source,Image.open(run/'target.png'),Image.open(run/'reverse/redenoise_only.png'),
-            Image.open(run/'reverse/stroke_projected.png')]
-    canvas=Image.new('RGB',(1152,312),'white');draw=ImageDraw.Draw(canvas)
-    for i,(label,im) in enumerate(zip(['input','mapped target','redenoise only','stroke mapping guided'],panels)):
+        start_from_noise=False,save_final_projection=False,progress=progress,guided_only=True)
+    panels=[source,Image.open(run/'target.png'),Image.open(run/'reverse/stroke_projected.png')]
+    canvas=Image.new('RGB',(864,312),'white');draw=ImageDraw.Draw(canvas)
+    for i,(label,im) in enumerate(zip(['input','combined target','guided result'],panels)):
         draw.text((i*288+5,5),label,fill='black');canvas.paste(im.convert('RGB').resize((288,288)),(i*288,24))
     canvas.save(run/'comparison.png');display(canvas)
 finally:save_snapshot()
@@ -171,9 +145,9 @@ finally:save_snapshot()
 files.download(save_snapshot())
 ''')
     nb=dict(base,cells=cells)
-    nb['metadata']['colab']['name']='attribute_straightness.ipynb'
+    nb['metadata']['colab']['name']='per_stroke_composite.ipynb'
     for i,c in enumerate(cells):c['id']=f'attribute-{i}'
-    path=ROOT/'notebooks/repair_audit/attribute_straightness.ipynb'
+    path=ROOT/'notebooks/repair_audit/per_stroke_composite.ipynb'
     path.write_text(json.dumps(nb,ensure_ascii=False,indent=1),encoding='utf-8')
     return path
 
