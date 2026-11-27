@@ -80,26 +80,39 @@ def inpaint_deleted_ink(plan, pipe, *, steps=25, seed=2026):
     return Image.composite(patch, plan.source, mask)
 
 
-class FlattenedTextGuide(TargetImageGuide):
-    def __init__(self, plan, filled):
-        source = np.asarray(plan.source, np.float32)/255
-        target = np.asarray(filled.convert('RGB'), np.float32)/255
-        if target.shape!=source.shape:
-            raise ValueError('Inpaint output must match the source dimensions')
+class WhiteStrokeGuide(TargetImageGuide):
+    def __init__(self, plan):
+        source = np.asarray(plan.proxy, np.float32)/255
+        target = source.copy()
         weights = (plan.erase | plan.add).astype(np.float32)
         if not weights.any():
             raise ValueError('추가하거나 지울 획 영역이 잡히지 않았습니다.')
-        # Add only the missing opacity. Avoid painting the full target on top of ink already there.
-        delta = (plan.aligned_alpha-plan.opacity)/np.maximum(1-plan.opacity, .01)
-        target[plan.add] *= 1-np.clip(delta[plan.add,None],0,1)
-        target[weights==0] = source[weights==0]
+        target[plan.erase] = 1
+        target[plan.add] = (1-plan.aligned_alpha[plan.add])[:,None]
         super().__init__(source, target, weights, [], dict(plan.report,strokes=[]),
                          TargetPlanConfig(maximum_step_blend=1.))
-        self.metadata.update(kind='flattened_local_inpaint', outside_roi='original_pixels',
-                             inside_roi='raw_guided_rgb', score_role='none')
+        self.metadata.update(kind='white_stroke_layer', outside_roi='original_proxy_pixels',
+                             inside_roi='grayscale_guided_ink', score_role='none')
 
     @torch.no_grad()
     def finish(self, rgb):
         source = torch.as_tensor(self.source,device=rgb.device).to(rgb).permute(2,0,1)[None]
         mask = torch.as_tensor(self.roi,device=rgb.device)[None,None]
-        return torch.where(mask,rgb,source)
+        gray = rgb.mean(dim=1,keepdim=True).expand_as(rgb)
+        return torch.where(mask,gray,source)
+
+
+def composite_repaired_ink(plan, repaired_white, filled):
+    """Transfer new ink opacity and the inpainted deletion patch onto the original RGB."""
+    if repaired_white.size!=plan.source.size or filled.size!=plan.source.size:
+        raise ValueError('Repair layers must match the source dimensions')
+    source = np.asarray(plan.source, np.uint8)
+    finished = source.copy()
+    finished[plan.erase] = np.asarray(filled.convert('RGB'))[plan.erase]
+    before = np.asarray(plan.proxy.convert('L'), np.float32)/255
+    after = np.asarray(repaired_white.convert('L'), np.float32)/255
+    # The input already has the old ink. Apply only the extra darkening.
+    transmission = np.clip(after/np.maximum(before, 1/255), 0, 1)
+    mask = plan.add & ~plan.erase
+    finished[mask] = np.rint(source[mask]*transmission[mask,None]).astype(np.uint8)
+    return Image.fromarray(finished)

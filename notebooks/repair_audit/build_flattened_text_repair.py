@@ -23,7 +23,7 @@ def build():
         'SOURCE_HASHES='+repr(hashes) if line.startswith('SOURCE_HASHES=') else line for line in setup.splitlines())
     setup += '''\nfrom io import BytesIO
 from PIL import ImageOps
-from repair_audit.flattened_text_repair import prepare_flattened_plan, inpaint_deleted_ink, FlattenedTextGuide
+from repair_audit.flattened_text_repair import prepare_flattened_plan, inpaint_deleted_ink, WhiteStrokeGuide, composite_repaired_ink
 from diffusion_model.stroke_projected_diffusion import run_projected_pair
 '''
     cells = []
@@ -39,6 +39,7 @@ from diffusion_model.stroke_projected_diffusion import run_projected_pair
 정사각형 2×2 입력 한 장과 칸별 정답 기준 획을 사용합니다. 입력은 576×576으로 맞춥니다. 짙은 글자와 상대적으로 밝은 배경에서 시험하세요.
 **4번에서 기준 글자 순서 지정 → 5번에서 완성 이미지 업로드 → 6번 모델 로딩 → 7번 삭제·추가 마스크 확인 → 8번 실행 → 9번 ZIP.**
 7번에서 어둡고 채도가 낮은 잉크를 흰 배경에 남겨 획을 추출합니다. 빨강은 원본에서 인페인팅할 곳, 파랑은 잉크를 추가할 곳입니다.
+8번에서 흰 배경 위의 획을 보정한 뒤, 지운 자리에 복원한 배경과 보정한 잉크를 합쳐 컬러 결과를 만듭니다.
 가려진 배경은 주변을 보고 추정합니다. 글자 위치는 2×2의 각 칸으로 지정합니다.
 ''')
     add('code',setup)
@@ -96,7 +97,7 @@ for index,image in enumerate([source,plan.proxy,Image.fromarray(overlay)]):
 print('왼쪽 원본 / 가운데 획 추출용 흰 배경 / 오른쪽 삭제(빨강)·추가(파랑)')
 display(panel)
 ''')
-    add('code','''# 8. 잘못된 획 자리 인페인팅 → 목표 획 가이드 역확산
+    add('code','''# 8. 흰 배경 획 보정 → 삭제 자리 인페인팅 → 원본 배경 합성
 from diffusers import AutoPipelineForInpainting
 if plan is None:raise ValueError('7번에서 마스크를 먼저 확인하세요.')
 if source is None or planned_choices!=[choice.value for choice in choices] or not np.array_equal(np.asarray(plan.source),np.asarray(source)):
@@ -108,6 +109,14 @@ Image.fromarray(plan.erase.astype(np.uint8)*255).save(OUTPUT/'erase_mask.png')
 Image.fromarray(plan.add.astype(np.uint8)*255).save(OUTPUT/'add_mask.png')
 json_write(OUTPUT/'run.json',dict(plan.report,source_name=source_name,reference_rows=[e['manifest_row'] for e in entries],
     checkpoint_sha256=file_hash(CHECKPOINT),source_hashes=SOURCE_HASHES,versions=VERSIONS,model_id=MODEL_ID,revision=REVISION))
+guide = WhiteStrokeGuide(plan)
+target = Image.fromarray(np.rint(guide.target*255).astype(np.uint8))
+target.save(OUTPUT/'target_white.png')
+report = run_projected_pair(pipe,plan.proxy,guide,OUTPUT/'reverse',steps=60,strength=.25,
+    prompt='black Korean typography on a plain white background',guided_only=True)
+with Image.open(OUTPUT/'reverse/stroke_projected.png') as image:
+    repaired_white = image.convert('RGB')
+repaired_white.save(OUTPUT/'repaired_white.png')
 try:
     pipe.vae.to(dtype=pipe.unet.dtype)
     inpaint = AutoPipelineForInpainting.from_pipe(pipe)
@@ -116,17 +125,13 @@ try:
 finally:
     pipe.vae.to(dtype=torch.float32)
 filled.save(OUTPUT/'inpainted.png')
-guide = FlattenedTextGuide(plan,filled)
-target = Image.fromarray(np.rint(guide.target*255).astype(np.uint8))
-target.save(OUTPUT/'target.png')
-report = run_projected_pair(pipe,source,guide,OUTPUT/'reverse',steps=60,strength=.25,
-    prompt='dark Korean typography in its original scene',guided_only=True)
-with Image.open(OUTPUT/'reverse/stroke_projected.png') as result:
-    panel = Image.new('RGB',(960,240))
-    for index,image in enumerate([source,filled,target,result]):
-        panel.paste(image.resize((240,240)),(index*240,0))
-    panel.save(OUTPUT/'comparison.png');display(panel)
-print('왼쪽부터 입력 / 삭제 자리 메움 / 획 추가 목표 / 최종 보정')
+result = composite_repaired_ink(plan,repaired_white,filled)
+result.save(OUTPUT/'final.png')
+panel = Image.new('RGB',(960,240))
+for index,image in enumerate([source,repaired_white,filled,result]):
+    panel.paste(image.resize((240,240)),(index*240,0))
+panel.save(OUTPUT/'comparison.png');display(panel)
+print('왼쪽부터 컬러 입력 / 흰 배경 획 보정 / 삭제 자리를 메운 원본 / 컬러 최종 결과(final.png)')
 ''')
     add('code',"# 9. 결과 ZIP 다운로드\nfiles.download(shutil.make_archive(str(OUTPUT),'zip',OUTPUT))")
     for i,cell in enumerate(cells):cell['id']=f'flattened-text-{i}'
