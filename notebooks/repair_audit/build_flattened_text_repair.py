@@ -38,7 +38,7 @@ from diffusion_model.stroke_projected_diffusion import run_projected_pair
 
 정사각형 2×2 입력 한 장과 칸별 정답 기준 획을 사용합니다. 입력은 576×576으로 맞춥니다. 짙은 글자와 상대적으로 밝은 배경에서 시험하세요.
 **4번에서 기준 글자 순서 지정 → 5번에서 완성 이미지 업로드 → 6번 모델 로딩 → 7번 삭제·추가 마스크 확인 → 8번 실행 → 9번 ZIP.**
-7번의 빨강은 인페인팅할 곳, 파랑은 잉크를 추가할 곳입니다. 빨강이 배경 무늬를 침범하면 실행 전에 확인하세요.
+7번에서 어둡고 채도가 낮은 잉크를 흰 배경에 남겨 획을 추출합니다. 빨강은 원본에서 인페인팅할 곳, 파랑은 잉크를 추가할 곳입니다.
 가려진 배경은 주변을 보고 추정합니다. 글자 위치는 2×2의 각 칸으로 지정합니다.
 ''')
     add('code',setup)
@@ -93,7 +93,7 @@ overlay[plan.add] = [75,155,255]
 panel = Image.new('RGB',(960,320))
 for index,image in enumerate([source,plan.proxy,Image.fromarray(overlay)]):
     panel.paste(image.resize((320,320)),(index*320,0))
-print('왼쪽 입력 / 가운데 획 추출용 대비 이미지 / 오른쪽 삭제(빨강)·추가(파랑)')
+print('왼쪽 원본 / 가운데 획 추출용 흰 배경 / 오른쪽 삭제(빨강)·추가(파랑)')
 display(panel)
 ''')
     add('code','''# 8. 잘못된 획 자리 인페인팅 → 목표 획 가이드 역확산

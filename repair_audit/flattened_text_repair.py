@@ -22,17 +22,27 @@ class FlattenedPlan:
     report: dict
 
 
+def white_background_proxy(source):
+    """Keep dark neutral ink and nearby antialiasing in the same pixel coordinates."""
+    rgb = np.asarray(source.convert('RGB'), np.float32)/255
+    gray = rgb @ np.array([.299, .587, .114], np.float32)
+    chroma = np.ptp(rgb, axis=-1)
+    core = (gray <= .30) & (chroma <= .12)
+    edge = (gray <= .58) & (chroma <= .23) & binary_dilation(core, iterations=2)
+    window = max(9, round(source.width / 12) | 1)
+    light = grey_closing(gray, size=(window, window))
+    opacity = np.clip((light-gray)/np.maximum(light, .15), 0, 1)
+    opacity[~(core | edge)] = 0
+    proxy = Image.fromarray(np.rint((1-opacity)*255).astype(np.uint8)).convert('RGB')
+    return proxy, opacity
+
+
 def prepare_flattened_plan(source, conditions, extractor):
-    """Estimate dark ink from local contrast, then fit the usual reference glyphs."""
+    """Extract strokes from the white proxy, retaining the full-color image for repair."""
     source = source.convert('RGB')
     if source.width != source.height or source.width % 16 or len(conditions) != 4:
         raise ValueError('Use a square 2x2 sheet with four references and dimensions divisible by 16')
-    gray = np.asarray(source, np.float32) @ np.array([.299, .587, .114], np.float32) / 255
-    window = max(9, round(source.width / 12) | 1)
-    local_light = grey_closing(gray, size=(window, window))
-    opacity = np.clip((local_light-gray)/np.maximum(local_light, .15), 0, 1)
-    opacity = np.where(opacity >= .06, opacity, 0).astype(np.float32)
-    proxy = Image.fromarray(np.rint((1-opacity)*255).astype(np.uint8)).convert('RGB')
+    proxy, opacity = white_background_proxy(source)
     observed = extract_sheet_masks(proxy, conditions, extractor)
     aligned, rendered = build_target_plan(proxy, conditions, observed,
         registration_config=SourceConfig(rotation=0., shear=0.))
@@ -49,6 +59,7 @@ def prepare_flattened_plan(source, conditions, extractor):
     erase = binary_dilation(ink, iterations=2) & (alpha <= .03)
     add = (alpha - opacity) > .06
     report = dict(aligned.report, input_mode='single_flattened_image',
+                  extraction_input='neutral_ink_on_white',
                   erase_pixels=int(erase.sum()), add_pixels=int(add.sum()))
     return FlattenedPlan(source, proxy, opacity, alpha, erase, add, report)
 
