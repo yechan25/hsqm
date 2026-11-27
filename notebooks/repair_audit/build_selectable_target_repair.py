@@ -9,7 +9,7 @@ from build_target_guided_repair import build as build_archive
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def build(*,timeline=False,ink_only=False):
+def build(*,timeline=False,ink_only=False,write=True):
     timeline = timeline or ink_only
     base=build_archive(write=False)
     old_codes=[''.join(c['source']) for c in base['cells'] if c['cell_type']=='code']
@@ -222,6 +222,7 @@ print(f'DDIM 설정 {REPAIR_STEPS}스텝 × 강도 {REPAIR_STRENGTH} → 경로�
     filename='target_guided_repair_timeline.ipynb' if timeline else 'target_guided_repair.ipynb'
     if ink_only:filename='target_guided_repair_ink.ipynb'
     nb['metadata']['colab']['name']=filename
+    if not write:return nb
     path=ROOT/'notebooks/repair_audit'/filename
     path.write_text(json.dumps(nb,ensure_ascii=False,indent=1),encoding='utf-8')
     return path
